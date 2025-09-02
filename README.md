@@ -14,7 +14,7 @@ ECC: P-256, P-384, Ed25519
 
 Simply use Yubico Authenticator to create your signing and   
 encryption certificate and export your encryption certificate,     
-to give it to your friends. You don't have to Export your signing   
+to give it to your friends. You don't have to export your signing   
 certificate, because it is not needed for signature verification.    
 
 If you use Linux (Debian/Ubuntu) you may have to do the following  
@@ -42,4 +42,5 @@ Nym: n1yql04xjhmlhfkjsk8x8g7fynm27xzvnk23wfys
 XMR: 45TJx8ZHngM4GuNfYxRw7R7vRyFgfMVp862JqycMrPmyfTfJAYcQGEzT27wL1z5RG1b5XfRPJk97KeZr1svK8qES2z1uZrS
 ```
 yubicrypt is dedicated to Alice and Bob.
+
 
