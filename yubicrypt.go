@@ -158,10 +158,14 @@ func (g *GUI) createMainUI() fyne.CanvasObject {
 	)
 
 	clearBtn := widget.NewButtonWithIcon("Clear", theme.DeleteIcon(), g.onClear)
-	pinContainer := container.NewHBox(
-		widget.NewLabel("PIN:"),
-		g.pinEntry,
-		clearBtn,
+	pinContainer := container.NewVBox(
+		container.NewHBox(
+			layout.NewSpacer(),
+			widget.NewLabel("PIN:"),
+			g.pinEntry,
+			clearBtn,
+			layout.NewSpacer(),
+		),
 	)
 
 	mainContainer := container.NewBorder(
