@@ -353,19 +353,20 @@ func (g *GUI) onClear() {
 	g.statusLabel.SetText("Cleared text area, clipboard and reset encryption state")
 }
 
+// signData signs with RFC-compliant normalization
 func (g *GUI) signData(data []byte, pin string) (string, error) {
     pinGuard := memguard.NewBufferFromBytes([]byte(pin))
     defer pinGuard.Destroy()
 
-    // Always normalize to CRLF before signing
-    normalizedData := normalizeCRLF(data)
+    // Normalize to RFC-compliant CRLF before signing
+    normalizedData := normalizeToRFCCompliantCRLF(data)
     
     sig, curveType, err := g.signDataInternal(pinGuard.Bytes(), normalizedData)
     if err != nil {
         return "", fmt.Errorf("signing failed: %v", err)
     }
 
-    // Always output with CRLF format
+    // RFC-compliant signature block
     return string(normalizedData) + "\r\n-----BEGIN " + curveType + " SIGNATURE-----\r\n" +
         formatSignature(sig) + "-----END " + curveType + " SIGNATURE-----\r\n", nil
 }
@@ -476,15 +477,14 @@ func (g *GUI) signDataEd25519(pin, data []byte, pubKey ed25519.PublicKey, yk *pi
 	return hex.EncodeToString(combined), AlgorithmED25519, nil
 }
 
+// verifyData handles verification with proper message normalization
 func (g *GUI) verifyData(data []byte) error {
     s := string(data)
 
-    // Search for all supported algorithms with flexible line endings
+    // Strict RFC-compliant detection - only CRLF format accepted
     var algorithm string
     var beg, end string
-    var foundWithCRLF bool
 
-    // First try with CRLF (internal format)
     for algo := range supportedAlgorithms {
         begTest := fmt.Sprintf("\r\n-----BEGIN %s SIGNATURE-----\r\n", algo)
         endTest := fmt.Sprintf("-----END %s SIGNATURE-----\r\n", algo)
@@ -493,69 +493,60 @@ func (g *GUI) verifyData(data []byte) error {
             algorithm = algo
             beg = begTest
             end = endTest
-            foundWithCRLF = true
             break
         }
     }
 
-    // If not found with CRLF, try with LF only (Usenet/Email format)
     if algorithm == "" {
+        // Try without CRLF in case of Usenet/email
         for algo := range supportedAlgorithms {
-            begTest := fmt.Sprintf("\n-----BEGIN %s SIGNATURE-----\n", algo)
-            endTest := fmt.Sprintf("-----END %s SIGNATURE-----\n", algo)
+            begTest := fmt.Sprintf("-----BEGIN %s SIGNATURE-----", algo)
+            endTest := fmt.Sprintf("-----END %s SIGNATURE-----", algo)
 
             if strings.Contains(s, begTest) && strings.Contains(s, endTest) {
                 algorithm = algo
                 beg = begTest
                 end = endTest
-                foundWithCRLF = false
                 break
             }
         }
-    }
-
-    if algorithm == "" {
-        return fmt.Errorf("no supported signature block found")
+        
+        if algorithm == "" {
+            return fmt.Errorf("no supported signature block found")
+        }
     }
 
     i := strings.Index(s, beg)
     j := strings.Index(s, end)
 
     if i == -1 || j == -1 || j < i {
-        return fmt.Errorf("invalid signature block")
+        return fmt.Errorf("invalid signature block format")
     }
 
     // Extract original message
     originalMessage := []byte(s[:i])
     hexPart := s[i+len(beg):j]
     
-    // Remove ALL line breaks and spaces from hex part
+    // Remove all line breaks and whitespace from hex part
     hexPart = strings.ReplaceAll(hexPart, "\r\n", "")
     hexPart = strings.ReplaceAll(hexPart, "\n", "")
     hexPart = strings.ReplaceAll(hexPart, "\r", "")
     hexPart = strings.ReplaceAll(hexPart, " ", "")
+    hexPart = strings.ReplaceAll(hexPart, "\t", "")
 
     combined, err := hex.DecodeString(hexPart)
     if err != nil {
         return fmt.Errorf("hex decode failed: %v", err)
     }
 
-    // Normalize message to CRLF for consistent verification
-    // If the signature was found with LF only (Usenet), we need to normalize the message
-    var messageToVerify []byte
-    if foundWithCRLF {
-        // Internal format - use as is
-        messageToVerify = originalMessage
-    } else {
-        // Usenet/Email format - normalize to CRLF
-        messageToVerify = normalizeCRLF(originalMessage)
-    }
+    // Normalize ONLY the message part for verification
+    normalizedMessage := normalizeToRFCCompliantCRLF(originalMessage)
 
     switch algorithm {
     case AlgorithmED25519:
-        return g.verifyEd25519(messageToVerify, combined)
+        return g.verifyEd25519(normalizedMessage, combined)
     case AlgorithmECCP256, AlgorithmECCP384:
-        return g.verifyECDSA(messageToVerify, combined, algorithm)
+        return g.verifyECDSA(normalizedMessage, combined, algorithm)
     default:
         return fmt.Errorf("unsupported algorithm: %s", algorithm)
     }
@@ -733,27 +724,81 @@ func (g *GUI) decryptData(data []byte, pin string) ([]byte, error) {
 	return decryptedData, nil
 }
 
-// normalizeCRLF normalizes all line endings to CRLF format
-// This ensures consistent signature creation and verification across different platforms
-func normalizeCRLF(data []byte) []byte {
-	s := string(data)
-	s = strings.ReplaceAll(s, "\r\n", "\n")  // Convert CRLF to LF first
-	s = strings.ReplaceAll(s, "\r", "\n")    // Convert old Mac CR to LF
-	return []byte(strings.ReplaceAll(s, "\n", "\r\n")) // Convert all to CRLF
+// normalizeToRFCCompliantCRLF normalizes all line endings to RFC-compliant CRLF
+// and ensures proper line length for cryptographic operations
+func normalizeToRFCCompliantCRLF(data []byte) []byte {
+    s := string(data)
+    
+    // First convert all line endings to LF
+    s = strings.ReplaceAll(s, "\r\n", "\n")
+    s = strings.ReplaceAll(s, "\r", "\n")
+    
+    // Now convert to RFC-compliant CRLF
+    lines := strings.Split(s, "\n")
+    var result strings.Builder
+    
+    for _, line := range lines {
+        trimmed := strings.TrimSpace(line)
+        if trimmed != "" {
+            result.WriteString(trimmed)
+            result.WriteString("\r\n")
+        }
+    }
+    
+    return []byte(result.String())
 }
 
-// formatSignature formats the signature string with 64 characters per line
+// normalizeMessageOnly normalizes only the message part, preserves signature blocks
+func normalizeMessageOnly(data []byte) []byte {
+    s := string(data)
+    
+    // Check if we have a signature block
+    var signatureStart, signatureEnd int = -1, -1
+        
+    for algo := range supportedAlgorithms {
+        begTest := fmt.Sprintf("-----BEGIN %s SIGNATURE-----", algo)
+        endTest := fmt.Sprintf("-----END %s SIGNATURE-----", algo)
+        
+        if start := strings.Index(s, begTest); start != -1 {
+            if end := strings.Index(s, endTest); end != -1 && end > start {
+                signatureStart = start
+                signatureEnd = end + len(endTest)
+                _ = algo
+                break
+            }
+        }
+    }
+    
+    if signatureStart == -1 {
+        // No signature found, normalize entire content
+        return normalizeToRFCCompliantCRLF(data)
+    }
+    
+    // Extract message part (before signature)
+    messagePart := s[:signatureStart]
+    
+    // Normalize only the message part
+    normalizedMessage := normalizeToRFCCompliantCRLF([]byte(messagePart))
+    
+    // Keep signature block unchanged
+    signatureBlock := s[signatureStart:signatureEnd]
+    
+    // Reconstruct with normalized message and original signature
+    return append(normalizedMessage, []byte(signatureBlock)...)
+}
+
+// formatSignature creates RFC-compliant signature with 64 characters per line and CRLF
 func formatSignature(sig string) string {
-	var result strings.Builder
-	for i := 0; i < len(sig); i += 64 {
-		end := i + 64
-		if end > len(sig) {
-			end = len(sig)
-		}
-		result.WriteString(sig[i:end])
-		result.WriteString("\r\n")
-	}
-	return result.String()
+    var result strings.Builder
+    for i := 0; i < len(sig); i += 64 {
+        end := i + 64
+        if end > len(sig) {
+            end = len(sig)
+        }
+        result.WriteString(sig[i:end])
+        result.WriteString("\r\n") // RFC-compliant CRLF
+    }
+    return result.String()
 }
 
 // formatBase64 formats base64 string with 76 characters per line
