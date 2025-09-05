@@ -52,10 +52,10 @@ var supportedAlgorithms = map[string]bool{
 	AlgorithmED25519: true,
 }
 
-// Mapping from elliptic curve to algorithm name
+// 🔧 KORRIGIERT: Mapping from elliptic curve to YOUR algorithm name (not default)
 var curveToAlgorithm = map[elliptic.Curve]string{
-	elliptic.P256(): elliptic.P256().Params().Name,
-	elliptic.P384(): elliptic.P384().Params().Name,
+	elliptic.P256(): AlgorithmECCP256, // war: elliptic.P256().Params().Name → "P-256"
+	elliptic.P384(): AlgorithmECCP384, // war: "P-384"
 }
 
 // Mapping from elliptic curve to hash function
@@ -373,6 +373,14 @@ func (g *GUI) onClear() {
 	g.statusLabel.SetText("Cleared text area, clipboard and reset encryption state")
 }
 
+// safePad ensures byte slice is exactly 'size' bytes long, padded with leading zeros.
+func safePad(b []byte, size int) []byte {
+	if len(b) > size {
+		return b[len(b)-size:] // Truncate from left if too long
+	}
+	return append(make([]byte, size-len(b)), b...) // Pad with leading zeros
+}
+
 // signData signs the input data using the YubiKey after hashing
 func (g *GUI) signData(data []byte, pin string) (string, error) {
 	pinGuard := memguard.NewBufferFromBytes([]byte(pin))
@@ -392,8 +400,19 @@ func (g *GUI) signData(data []byte, pin string) (string, error) {
 		return "", fmt.Errorf("signing failed: %v", err)
 	}
 
-	return string(normalizedData) + "\r\n-----BEGIN " + algo + " SIGNATURE-----\r\n" +
-		formatSignatureRFC(sig) + "-----END " + algo + " SIGNATURE-----\r\n", nil
+	// Ensure clean separation with CRLF
+	sep := "\r\n"
+	if len(normalizedData) > 0 {
+		last := string(normalizedData[len(normalizedData)-1:])
+		if last == "\n" && !(len(normalizedData) >= 2 && string(normalizedData[len(normalizedData)-2:]) == "\r\n") {
+			sep = "\n"
+		}
+	}
+
+	return string(normalizedData) + sep +
+		"-----BEGIN " + algo + " SIGNATURE-----" + sep +
+		formatSignatureRFC(sig) +
+		"-----END " + algo + " SIGNATURE-----" + sep, nil
 }
 
 // signDataInternal performs the actual signing operation
@@ -423,6 +442,7 @@ func (g *GUI) signDataInternal(pin, data []byte) (string, string, error) {
 		return "", "", fmt.Errorf("public key is not ECDSA or Ed25519")
 	}
 
+	// 🔧 Jetzt: Algorithmus-Name ist "ECCP256", nicht "P-256"
 	algorithm, exists := curveToAlgorithm[pubKey.Curve]
 	if !exists {
 		return "", "", fmt.Errorf("unsupported curve: %v", pubKey.Curve)
@@ -467,18 +487,13 @@ func (g *GUI) signDataInternal(pin, data []byte) (string, string, error) {
 	}
 
 	curveSize := (pubKey.Curve.Params().BitSize + 7) / 8
-	pad := func(b []byte) []byte {
-		if len(b) > curveSize {
-			b = b[len(b)-curveSize:]
-		}
-		return append(make([]byte, curveSize-len(b)), b...)
-	}
 
+	// Build combined signature: X || Y || R || S (all padded to curveSize)
 	var raw []byte
-	raw = append(raw, pad(pubKey.X.Bytes())...)
-	raw = append(raw, pad(pubKey.Y.Bytes())...)
-	raw = append(raw, pad(sig.R.Bytes())...)
-	raw = append(raw, pad(sig.S.Bytes())...)
+	raw = append(raw, safePad(pubKey.X.Bytes(), curveSize)...)
+	raw = append(raw, safePad(pubKey.Y.Bytes(), curveSize)...)
+	raw = append(raw, safePad(sig.R.Bytes(), curveSize)...)
+	raw = append(raw, safePad(sig.S.Bytes(), curveSize)...)
 
 	return hex.EncodeToString(raw), algorithm, nil
 }
@@ -507,29 +522,28 @@ func (g *GUI) signEd25519Data(pin string, hash []byte, pubKey ed25519.PublicKey,
 
 // verifyData verifies a signed message
 func (g *GUI) verifyData(data []byte) error {
-	// First normalize the entire input to RFC-compliant CRLF
-	normalizedInput := normalizeToRFCCompliantCRLF(data)
-	s := string(normalizedInput)
+	// Normalize input to handle both LF and CRLF
+	s := string(normalizeToRFCCompliantCRLF(data))
 
 	var algorithm string
 	var beg, end string
 
-	// Find the signature block and determine algorithm
+	// Try to find BEGIN/END block with CRLF or LF
 	for algo := range supportedAlgorithms {
-		begTestCRLF := fmt.Sprintf("\r\n-----BEGIN %s SIGNATURE-----\r\n", algo)
-		endTestCRLF := fmt.Sprintf("-----END %s SIGNATURE-----\r\n", algo)
-		begTestLF := fmt.Sprintf("\n-----BEGIN %s SIGNATURE-----\n", algo)
-		endTestLF := fmt.Sprintf("-----END %s SIGNATURE-----\n", algo)
+		begCRLF := "\r\n-----BEGIN " + algo + " SIGNATURE-----\r\n"
+		endCRLF := "-----END " + algo + " SIGNATURE-----\r\n"
+		begLF := "\n-----BEGIN " + algo + " SIGNATURE-----\n"
+		endLF := "-----END " + algo + " SIGNATURE-----\n"
 
-		if strings.Contains(s, begTestCRLF) && strings.Contains(s, endTestCRLF) {
+		if strings.Contains(s, begCRLF) {
 			algorithm = algo
-			beg = begTestCRLF
-			end = endTestCRLF
+			beg = begCRLF
+			end = endCRLF
 			break
-		} else if strings.Contains(s, begTestLF) && strings.Contains(s, endTestLF) {
+		} else if strings.Contains(s, begLF) {
 			algorithm = algo
-			beg = begTestLF
-			end = endTestLF
+			beg = begLF
+			end = endLF
 			break
 		}
 	}
@@ -544,8 +558,7 @@ func (g *GUI) verifyData(data []byte) error {
 		return fmt.Errorf("invalid signature block format")
 	}
 
-	// Extract original message and signature
-	originalMessage := normalizedInput[:i] // Already normalized
+	originalMessage := []byte(s[:i])
 	hexPart := s[i+len(beg) : j]
 	hexPart = regexp.MustCompile(`[\r\n\s\t]+`).ReplaceAllString(hexPart, "")
 
@@ -554,16 +567,14 @@ func (g *GUI) verifyData(data []byte) error {
 		return fmt.Errorf("hex decode failed: %v", err)
 	}
 
-	// Display status for large documents
+	// Status for large files
 	if len(originalMessage) > 1024*1024 {
 		g.statusLabel.SetText("Verifying large document (" + formatByteSize(len(originalMessage)) + ")...")
 		g.window.Canvas().Refresh(g.statusLabel)
 	}
 
-	// Verify based on algorithm type
 	switch algorithm {
 	case AlgorithmED25519:
-		// Ed25519 for text signature - uses hash of normalized data
 		hash := sha256.Sum256(originalMessage)
 		return g.verifyEd25519(hash[:], combined)
 	case AlgorithmECCP256, AlgorithmECCP384:
@@ -582,7 +593,6 @@ func (g *GUI) verifyEd25519(dataHash, combined []byte) error {
 	publicKey := combined[:Ed25519PublicKeySize]
 	signature := combined[Ed25519PublicKeySize:]
 
-	// Ed25519 verifies the hash of the data (YubiKey compatibility)
 	if !ed25519.Verify(ed25519.PublicKey(publicKey), dataHash, signature) {
 		return fmt.Errorf("Ed25519 signature verification failed")
 	}
@@ -590,7 +600,7 @@ func (g *GUI) verifyEd25519(dataHash, combined []byte) error {
 	return nil
 }
 
-// verifyECDSA verifies an ECDSA signature
+// verifyECDSA verifies an ECDSA signature with embedded public key (X,Y)
 func (g *GUI) verifyECDSA(data, combined []byte, algorithm string) error {
 	var curve elliptic.Curve
 	var hashFunc crypto.Hash
@@ -607,20 +617,26 @@ func (g *GUI) verifyECDSA(data, combined []byte, algorithm string) error {
 	}
 
 	curveSize := (curve.Params().BitSize + 7) / 8
-	expectedBytes := curveSize * 4
+	expectedBytes := 4 * curveSize
 	if len(combined) != expectedBytes {
 		return fmt.Errorf("invalid signature block size: expected %d, got %d", expectedBytes, len(combined))
 	}
 
-	// Extract public key components and signature values
-	x := new(big.Int).SetBytes(combined[0:curveSize])
-	y := new(big.Int).SetBytes(combined[curveSize : curveSize*2])
-	r := new(big.Int).SetBytes(combined[curveSize*2 : curveSize*3])
-	sVal := new(big.Int).SetBytes(combined[curveSize*3:])
+	X := new(big.Int).SetBytes(safePad(combined[0:curveSize], curveSize))
+	Y := new(big.Int).SetBytes(safePad(combined[curveSize:2*curveSize], curveSize))
+	R := new(big.Int).SetBytes(safePad(combined[2*curveSize:3*curveSize], curveSize))
+	S := new(big.Int).SetBytes(safePad(combined[3*curveSize:], curveSize))
 
-	pub := &ecdsa.PublicKey{Curve: curve, X: x, Y: y}
+	if !curve.IsOnCurve(X, Y) {
+		return fmt.Errorf("public key point (X,Y) is not on the curve %s", curve.Params().Name)
+	}
 
-	// Hash the data for verification
+	pub := &ecdsa.PublicKey{
+		Curve: curve,
+		X:     X,
+		Y:     Y,
+	}
+
 	var digest []byte
 	switch hashFunc {
 	case crypto.SHA256:
@@ -633,8 +649,7 @@ func (g *GUI) verifyECDSA(data, combined []byte, algorithm string) error {
 		digest = h.Sum(nil)
 	}
 
-	// Verify the signature
-	if !ecdsa.Verify(pub, digest, r, sVal) {
+	if !ecdsa.Verify(pub, digest, R, S) {
 		return fmt.Errorf("signature verification failed")
 	}
 
@@ -648,28 +663,24 @@ func (g *GUI) encryptData(data []byte, pubKeyFile string) (string, error) {
 		return "", fmt.Errorf("failed to load public key: %v", err)
 	}
 
-	// Generate random AES key
 	aesKeyGuard := memguard.NewBuffer(32)
 	defer aesKeyGuard.Destroy()
 	if _, err := rand.Read(aesKeyGuard.Bytes()); err != nil {
 		return "", fmt.Errorf("failed to generate AES key: %v", err)
 	}
 
-	// Encrypt AES key with RSA
 	encryptedKey, err := rsa.EncryptPKCS1v15(rand.Reader, pubKey, aesKeyGuard.Bytes())
 	if err != nil {
 		return "", fmt.Errorf("RSA encryption failed: %v", err)
 	}
 	defer memguard.WipeBytes(encryptedKey)
 
-	// Encrypt data with AES
 	encryptedData, err := encryptAES(data, aesKeyGuard.Bytes())
 	if err != nil {
 		return "", fmt.Errorf("AES encryption failed: %v", err)
 	}
 	defer memguard.WipeBytes(encryptedData)
 
-	// Combine encrypted key and data
 	combined := append(encryptedKey, encryptedData...)
 	defer memguard.WipeBytes(combined)
 
@@ -682,7 +693,6 @@ func (g *GUI) decryptData(data []byte, pin string) ([]byte, error) {
 	pinGuard := memguard.NewBufferFromBytes([]byte(pin))
 	defer pinGuard.Destroy()
 
-	// Clean up base64 input
 	s := string(data)
 	s = strings.ReplaceAll(s, "\r\n", "")
 	s = strings.ReplaceAll(s, " ", "")
@@ -699,7 +709,6 @@ func (g *GUI) decryptData(data []byte, pin string) ([]byte, error) {
 	}
 	defer yk.Close()
 
-	// Get certificate from key management slot
 	cert, err := yk.Certificate(piv.SlotKeyManagement)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get certificate from slot 9d: %v", err)
@@ -719,7 +728,6 @@ func (g *GUI) decryptData(data []byte, pin string) ([]byte, error) {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
 
-	// Split encrypted key and data
 	encryptedKey := combined[:keySize]
 	encryptedData := combined[keySize:]
 	defer memguard.WipeBytes(encryptedKey)
@@ -735,7 +743,6 @@ func (g *GUI) decryptData(data []byte, pin string) ([]byte, error) {
 		return nil, fmt.Errorf("private key does not support decryption")
 	}
 
-	// Decrypt AES key with RSA
 	decryptedPayload, err := decrypter.Decrypt(rand.Reader, encryptedKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("RSA decryption failed: %v", err)
@@ -746,7 +753,6 @@ func (g *GUI) decryptData(data []byte, pin string) ([]byte, error) {
 		return nil, fmt.Errorf("invalid AES key size")
 	}
 
-	// Decrypt data with AES
 	decryptedData, err := decryptAES(encryptedData, decryptedPayload)
 	if err != nil {
 		return nil, fmt.Errorf("AES decryption failed: %v", err)
@@ -756,13 +762,10 @@ func (g *GUI) decryptData(data []byte, pin string) ([]byte, error) {
 }
 
 // normalizeToRFCCompliantCRLF converts all line endings to RFC-compliant CRLF
-// RFC 5322 compliant for email and Usenet
 func normalizeToRFCCompliantCRLF(data []byte) []byte {
-	// First convert all CRLF and single CR to LF
 	s := string(data)
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
-	// Then convert all LF to RFC-compliant CRLF
 	s = strings.ReplaceAll(s, "\n", "\r\n")
 	return []byte(s)
 }
@@ -776,22 +779,21 @@ func formatSignatureRFC(sig string) string {
 			end = len(sig)
 		}
 		result.WriteString(sig[i:end])
-		result.WriteString("\r\n") // RFC-compliant line ending
+		result.WriteString("\r\n")
 	}
 	return result.String()
 }
 
 // formatBase64RFC formats base64 string with 76 characters per line and RFC-compliant CRLF
-// RFC 2045 compliant for MIME encoding
 func formatBase64RFC(data string) string {
 	var result strings.Builder
-	for i := 0; i < len(data); i += 76 { // 76 chars per line as per RFC
+	for i := 0; i < len(data); i += 76 {
 		end := i + 76
 		if end > len(data) {
 			end = len(data)
 		}
 		result.WriteString(data[i:end])
-		result.WriteString("\r\n") // RFC-compliant line ending
+		result.WriteString("\r\n")
 	}
 	return result.String()
 }
