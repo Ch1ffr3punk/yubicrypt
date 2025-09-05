@@ -378,8 +378,8 @@ func (g *GUI) signData(data []byte, pin string) (string, error) {
 	pinGuard := memguard.NewBufferFromBytes([]byte(pin))
 	defer pinGuard.Destroy()
 
-	// Normalize line endings to CRLF before hashing
-	normalizedData := normalizeToRFCCompliantCRLFSimple(data)
+	// Normalize line endings to RFC-compliant CRLF before hashing
+	normalizedData := normalizeToRFCCompliantCRLF(data)
 
 	// Display status that we're hashing large document
 	if len(normalizedData) > 1024*1024 { // > 1MB
@@ -393,7 +393,7 @@ func (g *GUI) signData(data []byte, pin string) (string, error) {
 	}
 
 	return string(normalizedData) + "\r\n-----BEGIN " + algo + " SIGNATURE-----\r\n" +
-		formatSignature(sig) + "-----END " + algo + " SIGNATURE-----\r\n", nil
+		formatSignatureRFC(sig) + "-----END " + algo + " SIGNATURE-----\r\n", nil
 }
 
 // signDataInternal performs the actual signing operation
@@ -412,7 +412,7 @@ func (g *GUI) signDataInternal(pin, data []byte) (string, string, error) {
 
 	// Handle Ed25519 signing
 	if ed25519PubKey, ok := cert.PublicKey.(ed25519.PublicKey); ok {
-		// Ed25519 signs the hash of the data, not the raw data
+		// Ed25519 signs the hash of the data, not the raw data (YubiKey requirement)
 		hash := sha256.Sum256(data)
 		return g.signEd25519Data(string(pin), hash[:], ed25519PubKey, yk)
 	}
@@ -507,7 +507,9 @@ func (g *GUI) signEd25519Data(pin string, hash []byte, pubKey ed25519.PublicKey,
 
 // verifyData verifies a signed message
 func (g *GUI) verifyData(data []byte) error {
-	s := string(data)
+	// First normalize the entire input to RFC-compliant CRLF
+	normalizedInput := normalizeToRFCCompliantCRLF(data)
+	s := string(normalizedInput)
 
 	var algorithm string
 	var beg, end string
@@ -543,7 +545,7 @@ func (g *GUI) verifyData(data []byte) error {
 	}
 
 	// Extract original message and signature
-	originalMessage := []byte(s[:i])
+	originalMessage := normalizedInput[:i] // Already normalized
 	hexPart := s[i+len(beg) : j]
 	hexPart = regexp.MustCompile(`[\r\n\s\t]+`).ReplaceAllString(hexPart, "")
 
@@ -552,29 +554,27 @@ func (g *GUI) verifyData(data []byte) error {
 		return fmt.Errorf("hex decode failed: %v", err)
 	}
 
-	// Normalize line endings before verification
-	normalizedMessage := normalizeToRFCCompliantCRLFSimple(originalMessage)
-
 	// Display status for large documents
-	if len(normalizedMessage) > 1024*1024 {
-		g.statusLabel.SetText("Verifying large document (" + formatByteSize(len(normalizedMessage)) + ")...")
+	if len(originalMessage) > 1024*1024 {
+		g.statusLabel.SetText("Verifying large document (" + formatByteSize(len(originalMessage)) + ")...")
 		g.window.Canvas().Refresh(g.statusLabel)
 	}
 
 	// Verify based on algorithm type
 	switch algorithm {
 	case AlgorithmED25519:
-		// Ed25519 for text signature
-		return g.verifyEd25519(normalizedMessage, combined)
+		// Ed25519 for text signature - uses hash of normalized data
+		hash := sha256.Sum256(originalMessage)
+		return g.verifyEd25519(hash[:], combined)
 	case AlgorithmECCP256, AlgorithmECCP384:
-		return g.verifyECDSA(normalizedMessage, combined, algorithm)
+		return g.verifyECDSA(originalMessage, combined, algorithm)
 	default:
 		return fmt.Errorf("unsupported algorithm: %s", algorithm)
 	}
 }
 
 // verifyEd25519 verifies an Ed25519 signature
-func (g *GUI) verifyEd25519(data, combined []byte) error {
+func (g *GUI) verifyEd25519(dataHash, combined []byte) error {
 	if len(combined) != Ed25519CombinedSize {
 		return fmt.Errorf("invalid Ed25519 signature block")
 	}
@@ -582,10 +582,8 @@ func (g *GUI) verifyEd25519(data, combined []byte) error {
 	publicKey := combined[:Ed25519PublicKeySize]
 	signature := combined[Ed25519PublicKeySize:]
 
-	// Ed25519 requires the hash of the data for verification
-	hash := sha256.Sum256(data)
-
-	if !ed25519.Verify(ed25519.PublicKey(publicKey), hash[:], signature) {
+	// Ed25519 verifies the hash of the data (YubiKey compatibility)
+	if !ed25519.Verify(ed25519.PublicKey(publicKey), dataHash, signature) {
 		return fmt.Errorf("Ed25519 signature verification failed")
 	}
 
@@ -676,7 +674,7 @@ func (g *GUI) encryptData(data []byte, pubKeyFile string) (string, error) {
 	defer memguard.WipeBytes(combined)
 
 	base64Str := base64.StdEncoding.EncodeToString(combined)
-	return formatBase64(base64Str), nil
+	return formatBase64RFC(base64Str), nil
 }
 
 // decryptData decrypts data using YubiKey's private key
@@ -757,17 +755,20 @@ func (g *GUI) decryptData(data []byte, pin string) ([]byte, error) {
 	return decryptedData, nil
 }
 
-// normalizeToRFCCompliantCRLFSimple converts all line endings to CRLF
-func normalizeToRFCCompliantCRLFSimple(data []byte) []byte {
+// normalizeToRFCCompliantCRLF converts all line endings to RFC-compliant CRLF
+// RFC 5322 compliant for email and Usenet
+func normalizeToRFCCompliantCRLF(data []byte) []byte {
+	// First convert all CRLF and single CR to LF
 	s := string(data)
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
+	// Then convert all LF to RFC-compliant CRLF
 	s = strings.ReplaceAll(s, "\n", "\r\n")
 	return []byte(s)
 }
 
-// formatSignature formats hex signature with 64 characters per line and CRLF
-func formatSignature(sig string) string {
+// formatSignatureRFC formats hex signature with 64 characters per line and RFC-compliant CRLF
+func formatSignatureRFC(sig string) string {
 	var result strings.Builder
 	for i := 0; i < len(sig); i += 64 {
 		end := i + 64
@@ -775,21 +776,22 @@ func formatSignature(sig string) string {
 			end = len(sig)
 		}
 		result.WriteString(sig[i:end])
-		result.WriteString("\r\n")
+		result.WriteString("\r\n") // RFC-compliant line ending
 	}
 	return result.String()
 }
 
-// formatBase64 formats base64 string with 76 characters per line and CRLF
-func formatBase64(data string) string {
+// formatBase64RFC formats base64 string with 76 characters per line and RFC-compliant CRLF
+// RFC 2045 compliant for MIME encoding
+func formatBase64RFC(data string) string {
 	var result strings.Builder
-	for i := 0; i < len(data); i += 76 {
+	for i := 0; i < len(data); i += 76 { // 76 chars per line as per RFC
 		end := i + 76
 		if end > len(data) {
 			end = len(data)
 		}
 		result.WriteString(data[i:end])
-		result.WriteString("\r\n")
+		result.WriteString("\r\n") // RFC-compliant line ending
 	}
 	return result.String()
 }
@@ -859,7 +861,7 @@ func (g *GUI) onPad() {
 
 	paddedData := securePadMessage([]byte(input))
 	base64String := base64.StdEncoding.EncodeToString(paddedData)
-	formattedBase64 := formatBase64(base64String)
+	formattedBase64 := formatBase64RFC(base64String)
 
 	g.textArea.SetText(formattedBase64)
 
