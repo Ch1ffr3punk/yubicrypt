@@ -18,6 +18,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -26,6 +29,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
@@ -54,8 +58,8 @@ var supportedAlgorithms = map[string]bool{
 
 // Mapping from elliptic curve to YOUR algorithm name (not default)
 var curveToAlgorithm = map[elliptic.Curve]string{
-	elliptic.P256(): AlgorithmECCP256, // war: elliptic.P256().Params().Name → "P-256"
-	elliptic.P384(): AlgorithmECCP384, // war: "P-384"
+	elliptic.P256(): AlgorithmECCP256,
+	elliptic.P384(): AlgorithmECCP384,
 }
 
 // Mapping from elliptic curve to hash function
@@ -80,6 +84,20 @@ var supportedRSASizes = map[int]string{
 	2048: "RSA2048",
 	3072: "RSA3072",
 	4096: "RSA4096",
+}
+
+// ClassicIdenticon for signature identicons with original visual style
+type ClassicIdenticon struct {
+	source []byte
+	size   int
+}
+
+// ClassicNibbler processes bytes in original style
+type ClassicNibbler struct {
+	bytes     []byte
+	index     int
+	nibble    uint8
+	hasNibble bool
 }
 
 // GUI structure
@@ -124,7 +142,7 @@ func (g *GUI) createUI() {
 	g.textArea.SetPlaceHolder("Enter text to encrypt, sign, or paste encrypted content here...")
 
 	g.pinEntry = widget.NewPasswordEntry()
-	g.pinEntry.SetPlaceHolder("Enter PIN (max 8 chars)")
+	g.pinEntry.SetPlaceHolder("")
 	g.pinEntry.Validator = func(s string) error {
 		if len(s) > 8 {
 			return fmt.Errorf("PIN must be max 8 characters")
@@ -314,25 +332,25 @@ func (g *GUI) choosePublicKey() {
 			return
 		}
 
-		g.publicKeyPath = path
-		g.encryptionUsed = false
-		g.statusLabel.SetText("Selected public key: " + filepath.Base(path) + " - Encrypting...")
+	g.publicKeyPath = path
+	g.encryptionUsed = false
+	g.statusLabel.SetText("Selected public key: " + filepath.Base(path) + " - Encrypting...")
 
-		input := g.textArea.Text
-		if input == "" {
-			g.statusLabel.SetText("Selected: " + filepath.Base(path) + " - No text to encrypt")
-			return
-		}
+	input := g.textArea.Text
+	if input == "" {
+		g.statusLabel.SetText("Selected: " + filepath.Base(path) + " - No text to encrypt")
+		return
+	}
 
-		result, err := g.encryptData([]byte(input), g.publicKeyPath)
-		if err != nil {
-			g.statusLabel.SetText("Encryption failed: %v" + err.Error())
-			return
-		}
+	result, err := g.encryptData([]byte(input), g.publicKeyPath)
+	if err != nil {
+		g.statusLabel.SetText("Encryption failed: %v" + err.Error())
+		return
+	}
 
-		g.encryptionUsed = true
-		g.textArea.SetText(result)
-		g.statusLabel.SetText("✓ Encrypted with: " + filepath.Base(path))
+	g.encryptionUsed = true
+	g.textArea.SetText(result)
+	g.statusLabel.SetText("✓ Encrypted with: " + filepath.Base(path))
 	}, g.window)
 }
 
@@ -442,7 +460,7 @@ func (g *GUI) signDataInternal(pin, data []byte) (string, string, error) {
 		return "", "", fmt.Errorf("public key is not ECDSA or Ed25519")
 	}
 
-	// 🔧 Jetzt: Algorithmus-Name ist "ECCP256", nicht "P-256"
+	// Algorithm name is "ECCP256", not "P-256"
 	algorithm, exists := curveToAlgorithm[pubKey.Curve]
 	if !exists {
 		return "", "", fmt.Errorf("unsupported curve: %v", pubKey.Curve)
@@ -549,12 +567,14 @@ func (g *GUI) verifyData(data []byte) error {
 	}
 
 	if algorithm == "" {
+		g.showErrorPopup("No supported signature found")
 		return fmt.Errorf("no supported signature block found")
 	}
 
 	i := strings.Index(s, beg)
 	j := strings.Index(s, end)
 	if i == -1 || j == -1 || j <= i {
+		g.showErrorPopup("Invalid signature format")
 		return fmt.Errorf("invalid signature block format")
 	}
 
@@ -564,6 +584,7 @@ func (g *GUI) verifyData(data []byte) error {
 
 	combined, err := hex.DecodeString(hexPart)
 	if err != nil {
+		g.showErrorPopup("Hex decoding failed")
 		return fmt.Errorf("hex decode failed: %v", err)
 	}
 
@@ -573,14 +594,66 @@ func (g *GUI) verifyData(data []byte) error {
 		g.window.Canvas().Refresh(g.statusLabel)
 	}
 
+	var verificationErr error
 	switch algorithm {
 	case AlgorithmED25519:
 		hash := sha256.Sum256(originalMessage)
-		return g.verifyEd25519(hash[:], combined)
+		verificationErr = g.verifyEd25519(hash[:], combined)
 	case AlgorithmECCP256, AlgorithmECCP384:
-		return g.verifyECDSA(originalMessage, combined, algorithm)
+		verificationErr = g.verifyECDSA(originalMessage, combined, algorithm)
 	default:
-		return fmt.Errorf("unsupported algorithm: %s", algorithm)
+		verificationErr = fmt.Errorf("unsupported algorithm: %s", algorithm)
+	}
+
+	if verificationErr != nil {
+		g.showErrorPopup("Signature verification failed: " + verificationErr.Error())
+		return verificationErr
+	}
+
+	// Extract public key for identicon
+	publicKeyBytes, err := extractPublicKeyFromSignature(combined, algorithm)
+	if err != nil {
+		g.showErrorPopup("Error extracting public key: " + err.Error())
+		return err
+	}
+
+	// Successfully verified - show identicon from public key
+	g.showSuccessPopup(publicKeyBytes)
+	return nil
+}
+
+// extractPublicKeyFromSignature extracts the public key from the signature
+func extractPublicKeyFromSignature(combined []byte, algorithm string) ([]byte, error) {
+	switch algorithm {
+	case AlgorithmED25519:
+		if len(combined) != Ed25519CombinedSize {
+			return nil, fmt.Errorf("invalid Ed25519 signature block")
+		}
+		// Return only the public key (first 32 bytes)
+		return combined[:Ed25519PublicKeySize], nil
+		
+	case AlgorithmECCP256, AlgorithmECCP384:
+		var curve elliptic.Curve
+		switch algorithm {
+		case AlgorithmECCP256:
+			curve = elliptic.P256()
+		case AlgorithmECCP384:
+			curve = elliptic.P384()
+		default:
+			return nil, fmt.Errorf("unsupported ECDSA algorithm: %s", algorithm)
+		}
+		
+		curveSize := (curve.Params().BitSize + 7) / 8
+		expectedBytes := 4 * curveSize
+		if len(combined) != expectedBytes {
+			return nil, fmt.Errorf("invalid signature block size: expected %d, got %d", expectedBytes, len(combined))
+		}
+		
+		// Return only the public key (X || Y)
+		return combined[:2*curveSize], nil
+		
+	default:
+		return nil, fmt.Errorf("unsupported algorithm: %s", algorithm)
 	}
 }
 
@@ -654,6 +727,47 @@ func (g *GUI) verifyECDSA(data, combined []byte, algorithm string) error {
 	}
 
 	return nil
+}
+
+func (g *GUI) showSuccessPopup(publicKeyBytes []byte) {
+	cleanKey := make([]byte, 0, len(publicKeyBytes))
+	for _, b := range publicKeyBytes {
+		if b != '\r' && b != '\n' && b != ' ' && b != '\t' {
+			cleanKey = append(cleanKey, b)
+		}
+	}
+	
+	hash := sha256.Sum256(cleanKey)
+	identicon := NewClassicIdenticon(hash[:])
+	img := identicon.Generate()
+	
+	fyneImg := canvas.NewImageFromImage(img)
+	fyneImg.FillMode = canvas.ImageFillContain
+	fyneImg.SetMinSize(fyne.NewSize(128, 128))
+	
+	successLabel := widget.NewLabel("Signature is valid")
+	successLabel.Alignment = fyne.TextAlignCenter
+	
+	content := container.NewVBox(
+		container.NewCenter(fyneImg),
+		container.NewCenter(successLabel),
+	)
+	
+	d := dialog.NewCustom("", "OK", content, g.window)
+	d.Show()
+}
+
+// showErrorPopup shows an error popup without graphics
+func (g *GUI) showErrorPopup(message string) {
+	errorLabel := widget.NewLabel(message)
+	errorLabel.Alignment = fyne.TextAlignCenter
+	
+	content := container.NewVBox(
+		container.NewCenter(errorLabel),
+	)
+	
+	d := dialog.NewCustom("", "OK", content, g.window)
+	d.Show()
 }
 
 // encryptData encrypts data using RSA-OAEP and AES-GCM
@@ -1038,4 +1152,219 @@ func openYubiKey(index int) (*piv.YubiKey, error) {
 		}
 	}
 	return nil, fmt.Errorf("no YubiKey found at index %d", index)
+}
+
+// NewClassicIdenticon creates a generator with classic look
+func NewClassicIdenticon(source []byte) *ClassicIdenticon {
+	return &ClassicIdenticon{
+		source: source,
+		size:   128, // 128x128 pixels
+	}
+}
+
+// NewClassicNibbler creates a nibble processor
+func NewClassicNibbler(bytes []byte) *ClassicNibbler {
+	return &ClassicNibbler{bytes: bytes}
+}
+
+// Next returns next 4-bit nibble (high first, then low)
+func (n *ClassicNibbler) Next() *uint8 {
+	if n.hasNibble {
+		n.hasNibble = false
+		return &n.nibble
+	}
+
+	if n.index >= len(n.bytes) {
+		return nil
+	}
+
+	value := n.bytes[n.index]
+	n.index++
+	n.nibble = value & 0x0F
+	n.hasNibble = true
+	hi := value >> 4
+	return &hi
+}
+
+// mapValue maps a value from one range to another
+func mapValue(value uint32, vmin, vmax, dmin, dmax uint32) float32 {
+	if vmax == vmin {
+		return float32(dmin)
+	}
+	return float32(dmin) + float32(value-vmin)*float32(dmax-dmin)/float32(vmax-vmin)
+}
+
+// foreground computes foreground color in original style
+func (identicon *ClassicIdenticon) foreground() color.Color {
+	if len(identicon.source) < 32 {
+		return color.RGBA{0, 0, 0, 255}
+	}
+
+	h1 := (uint16(identicon.source[28]) & 0x0f) << 8
+	h2 := uint16(identicon.source[29])
+	h := uint32(h1 | h2)
+	s := uint32(identicon.source[30])
+	l := uint32(identicon.source[31])
+
+	hue := mapValue(h, 0, 4095, 0, 360)
+	sat := mapValue(s, 0, 255, 0, 20)
+	lum := mapValue(l, 0, 255, 0, 20)
+
+	return identicon.hslToRgb(hue, 65.0-sat, 75.0-lum)
+}
+
+// hslToRgb converts HSL to RGB in original style
+func (identicon *ClassicIdenticon) hslToRgb(h, s, l float32) color.Color {
+	hue := h / 360.0
+	sat := s / 100.0
+	lum := l / 100.0
+
+	var b float32
+	if lum <= 0.5 {
+		b = lum * (sat + 1.0)
+	} else {
+		b = lum + sat - lum*sat
+	}
+	a := lum*2.0 - b
+
+	red := identicon.hueToRgb(a, b, hue+1.0/3.0)
+	green := identicon.hueToRgb(a, b, hue)
+	blue := identicon.hueToRgb(a, b, hue-1.0/3.0)
+
+	return color.RGBA{
+		R: uint8(math.Round(float64(red * 255.0))),
+		G: uint8(math.Round(float64(green * 255.0))),
+		B: uint8(math.Round(float64(blue * 255.0))),
+		A: 255,
+	}
+}
+
+// hueToRgb helper for color conversion
+func (identicon *ClassicIdenticon) hueToRgb(a, b, hue float32) float32 {
+	if hue < 0 {
+		hue += 1.0
+	} else if hue >= 1.0 {
+		hue -= 1.0
+	}
+
+	switch {
+	case hue < 1.0/6.0:
+		return a + (b-a)*6.0*hue
+	case hue < 0.5:
+		return b
+	case hue < 2.0/3.0:
+		return a + (b-a)*(2.0/3.0-hue)*6.0
+	default:
+		return a
+	}
+}
+
+// drawRect draws a solid rectangle with direct pixel access
+func (identicon *ClassicIdenticon) drawRect(img *image.RGBA, x0, y0, x1, y1 int, c color.Color) {
+	rect := img.Bounds()
+	x0 = max(x0, rect.Min.X)
+	y0 = max(y0, rect.Min.Y)
+	x1 = min(x1, rect.Max.X)
+	y1 = min(y1, rect.Max.Y)
+
+	if x0 >= x1 || y0 >= y1 {
+		return
+	}
+
+	r, g, b, a := c.RGBA()
+	rgba := color.RGBA{
+		R: uint8(r >> 8),
+		G: uint8(g >> 8),
+		B: uint8(b >> 8),
+		A: uint8(a >> 8),
+	}
+
+	for y := y0; y < y1; y++ {
+		rowStart := img.PixOffset(x0, y)
+		for x := 0; x < x1-x0; x++ {
+			idx := rowStart + x*4
+			img.Pix[idx] = rgba.R
+			img.Pix[idx+1] = rgba.G
+			img.Pix[idx+2] = rgba.B
+			img.Pix[idx+3] = rgba.A
+		}
+	}
+}
+
+// generatePixelPattern generates 5x5 symmetric pixel grid
+func (identicon *ClassicIdenticon) generatePixelPattern() []bool {
+	nibbler := NewClassicNibbler(identicon.source)
+	pixels := make([]bool, 25)
+
+	for row := 0; row < 5; row++ {
+		for col := 0; col < 3; col++ {
+			paint := false
+			if next := nibbler.Next(); next != nil {
+				paint = *next%2 == 0
+			}
+
+			ix := row*5 + col
+			mirrorIx := row*5 + (4 - col)
+			pixels[ix] = paint
+			pixels[mirrorIx] = paint
+		}
+	}
+
+	return pixels
+}
+
+// Generate creates the identicon for UI display (respects theme)
+func (identicon *ClassicIdenticon) Generate() image.Image {
+	const (
+		pixelSize  = 18 // Adjusted for 128x128
+		spriteSize = 5
+		margin     = (128 - pixelSize*spriteSize) / 2
+	)
+
+	fg := identicon.foreground()
+	img := image.NewRGBA(image.Rect(0, 0, identicon.size, identicon.size))
+
+	// Background adapts to theme
+	var bg color.RGBA
+	if fyne.CurrentApp().Settings().ThemeVariant() == theme.VariantDark {
+		bg = color.RGBA{30, 30, 30, 255}
+	} else {
+		bg = color.RGBA{255, 255, 255, 255}
+	}
+
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i] = bg.R
+		img.Pix[i+1] = bg.G
+		img.Pix[i+2] = bg.B
+		img.Pix[i+3] = bg.A
+	}
+
+	pixels := identicon.generatePixelPattern()
+
+	for row := 0; row < spriteSize; row++ {
+		for col := 0; col < spriteSize; col++ {
+			if pixels[row*spriteSize+col] {
+				x := col*pixelSize + margin
+				y := row*pixelSize + margin
+				identicon.drawRect(img, x, y, x+pixelSize, y+pixelSize, fg)
+			}
+		}
+	}
+
+	return img
+}
+
+// Helper functions min/max
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
