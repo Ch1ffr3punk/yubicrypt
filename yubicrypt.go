@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -84,20 +85,6 @@ var supportedRSASizes = map[int]string{
 	2048: "RSA2048",
 	3072: "RSA3072",
 	4096: "RSA4096",
-}
-
-// ClassicIdenticon for signature identicons with original visual style
-type ClassicIdenticon struct {
-	source []byte
-	size   int
-}
-
-// ClassicNibbler processes bytes in original style
-type ClassicNibbler struct {
-	bytes     []byte
-	index     int
-	nibble    uint8
-	hasNibble bool
 }
 
 // GUI structure
@@ -567,14 +554,14 @@ func (g *GUI) verifyData(data []byte) error {
 	}
 
 	if algorithm == "" {
-		g.showErrorPopup("No supported signature found")
+		g.showErrorPopup("No supported signature found", []byte{}, "")
 		return fmt.Errorf("no supported signature block found")
 	}
 
 	i := strings.Index(s, beg)
 	j := strings.Index(s, end)
 	if i == -1 || j == -1 || j <= i {
-		g.showErrorPopup("Invalid signature format")
+		g.showErrorPopup("Invalid signature format", []byte{}, algorithm)
 		return fmt.Errorf("invalid signature block format")
 	}
 
@@ -584,7 +571,7 @@ func (g *GUI) verifyData(data []byte) error {
 
 	combined, err := hex.DecodeString(hexPart)
 	if err != nil {
-		g.showErrorPopup("Hex decoding failed")
+		g.showErrorPopup("Hex decoding failed", []byte{}, algorithm)
 		return fmt.Errorf("hex decode failed: %v", err)
 	}
 
@@ -606,19 +593,19 @@ func (g *GUI) verifyData(data []byte) error {
 	}
 
 	if verificationErr != nil {
-		g.showErrorPopup("Signature verification failed: " + verificationErr.Error())
+		publicKeyBytes, _ := extractPublicKeyFromSignature(combined, algorithm)
+		g.showErrorPopup("Signature verification failed: "+verificationErr.Error(), publicKeyBytes, algorithm)
 		return verificationErr
 	}
 
-	// Extract public key for identicon
 	publicKeyBytes, err := extractPublicKeyFromSignature(combined, algorithm)
 	if err != nil {
-		g.showErrorPopup("Error extracting public key: " + err.Error())
+		g.showErrorPopup("Error extracting public key: "+err.Error(), []byte{}, algorithm)
 		return err
 	}
 
-	// Successfully verified - show identicon from public key
-	g.showSuccessPopup(publicKeyBytes)
+	// Successfully verified - show identicon from public key (hashed!)
+	g.showSuccessPopup(publicKeyBytes, algorithm)
 	return nil
 }
 
@@ -729,45 +716,119 @@ func (g *GUI) verifyECDSA(data, combined []byte, algorithm string) error {
 	return nil
 }
 
-func (g *GUI) showSuccessPopup(publicKeyBytes []byte) {
-	cleanKey := make([]byte, 0, len(publicKeyBytes))
-	for _, b := range publicKeyBytes {
-		if b != '\r' && b != '\n' && b != ' ' && b != '\t' {
-			cleanKey = append(cleanKey, b)
-		}
+// stripLeadingZeros removes leading zero bytes, but keeps at least one byte.
+func stripLeadingZeros(b []byte) []byte {
+	i := 0
+	for i < len(b)-1 && b[i] == 0 {
+		i++
 	}
-	
-	hash := sha256.Sum256(cleanKey)
+	return b[i:]
+}
+
+// extractPublicKeyDisplayBytes returns the public key bytes for display/hashing —
+// with leading zeros stripped from X and Y for ECC keys (for cleaner hex strings),
+// but full raw bytes for Ed25519.
+func extractPublicKeyDisplayBytes(combined []byte, algorithm string) ([]byte, error) {
+	switch algorithm {
+	case AlgorithmED25519:
+		if len(combined) != Ed25519CombinedSize {
+			return nil, fmt.Errorf("invalid Ed25519 signature block")
+		}
+		// Return full 32 bytes — no stripping
+		return combined[:Ed25519PublicKeySize], nil
+
+	case AlgorithmECCP256, AlgorithmECCP384:
+		var curve elliptic.Curve
+		switch algorithm {
+		case AlgorithmECCP256:
+			curve = elliptic.P256()
+		case AlgorithmECCP384:
+			curve = elliptic.P384()
+		default:
+			return nil, fmt.Errorf("unsupported ECDSA algorithm: %s", algorithm)
+		}
+
+		curveSize := (curve.Params().BitSize + 7) / 8
+		expectedBytes := 4 * curveSize
+		if len(combined) != expectedBytes {
+			return nil, fmt.Errorf("invalid signature block size: expected %d, got %d", expectedBytes, len(combined))
+		}
+
+		// Extract X and Y with leading zeros (as stored)
+		XBytes := combined[0:curveSize]
+		YBytes := combined[curveSize : 2*curveSize]
+
+		// Strip leading zeros for display — but keep at least one byte!
+		XStripped := stripLeadingZeros(XBytes)
+		YStripped := stripLeadingZeros(YBytes)
+
+		// Concatenate stripped X and Y for display/hashing
+		result := make([]byte, 0, len(XStripped)+len(YStripped))
+		result = append(result, XStripped...)
+		result = append(result, YStripped...)
+
+		return result, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported algorithm: %s", algorithm)
+	}
+}
+
+// showSuccessPopup shows the identicon popup for successful verification
+func (g *GUI) showSuccessPopup(publicKeyBytes []byte, algorithm string) {
+	displayBytes, err := extractPublicKeyDisplayBytes(publicKeyBytes, algorithm)
+	if err != nil {
+		displayBytes = publicKeyBytes
+	}
+
+	hexString := hex.EncodeToString(displayBytes)
+	hash := sha256.Sum256([]byte(hexString))
+
 	identicon := NewClassicIdenticon(hash[:])
 	img := identicon.Generate()
-	
+
 	fyneImg := canvas.NewImageFromImage(img)
 	fyneImg.FillMode = canvas.ImageFillContain
 	fyneImg.SetMinSize(fyne.NewSize(128, 128))
-	
+
 	successLabel := widget.NewLabel("Signature is valid")
 	successLabel.Alignment = fyne.TextAlignCenter
-	
+
+	copyBtn := widget.NewButton("Copy Signature Component", func() {
+		clipboard := g.app.Clipboard()
+		if clipboard != nil {
+			clipboard.SetContent(hexString)
+			g.statusLabel.SetText("✓ Signature Component copied to clipboard")
+			time.AfterFunc(2*time.Second, func() {
+				g.statusLabel.SetText("Ready")
+			})
+		}
+	})
+
 	content := container.NewVBox(
 		container.NewCenter(fyneImg),
 		container.NewCenter(successLabel),
+		container.NewCenter(copyBtn),
 	)
-	
+
 	d := dialog.NewCustom("", "OK", content, g.window)
 	d.Show()
+
 }
 
-// showErrorPopup shows an error popup without graphics
-func (g *GUI) showErrorPopup(message string) {
-	errorLabel := widget.NewLabel(message)
-	errorLabel.Alignment = fyne.TextAlignCenter
-	
-	content := container.NewVBox(
-		container.NewCenter(errorLabel),
-	)
-	
-	d := dialog.NewCustom("", "OK", content, g.window)
-	d.Show()
+// showErrorPopup shows an error popup with identicon for failed verification
+func (g *GUI) showErrorPopup(message string, publicKeyBytes []byte, algorithm string) {
+	if len(publicKeyBytes) == 0 {
+		errorLabel := widget.NewLabel(message)
+		errorLabel.Alignment = fyne.TextAlignCenter
+		content := container.NewVBox(container.NewCenter(errorLabel))
+		d := dialog.NewCustom("", "OK", content, g.window)
+		d.Show()
+		return
+	}
+
+	//d := dialog.NewCustom("", "OK", g.window)
+	//d.Show()
 }
 
 // encryptData encrypts data using RSA-OAEP and AES-GCM
@@ -1154,36 +1215,18 @@ func openYubiKey(index int) (*piv.YubiKey, error) {
 	return nil, fmt.Errorf("no YubiKey found at index %d", index)
 }
 
+// ClassicIdenticon with 100% deterministic, bit-perfect design + 2-color mode
+type ClassicIdenticon struct {
+	source []byte
+	size   int
+}
+
 // NewClassicIdenticon creates a generator with classic look
 func NewClassicIdenticon(source []byte) *ClassicIdenticon {
 	return &ClassicIdenticon{
 		source: source,
-		size:   128, // 128x128 pixels
+		size:   256,
 	}
-}
-
-// NewClassicNibbler creates a nibble processor
-func NewClassicNibbler(bytes []byte) *ClassicNibbler {
-	return &ClassicNibbler{bytes: bytes}
-}
-
-// Next returns next 4-bit nibble (high first, then low)
-func (n *ClassicNibbler) Next() *uint8 {
-	if n.hasNibble {
-		n.hasNibble = false
-		return &n.nibble
-	}
-
-	if n.index >= len(n.bytes) {
-		return nil
-	}
-
-	value := n.bytes[n.index]
-	n.index++
-	n.nibble = value & 0x0F
-	n.hasNibble = true
-	hi := value >> 4
-	return &hi
 }
 
 // mapValue maps a value from one range to another
@@ -1194,23 +1237,113 @@ func mapValue(value uint32, vmin, vmax, dmin, dmax uint32) float32 {
 	return float32(dmin) + float32(value-vmin)*float32(dmax-dmin)/float32(vmax-vmin)
 }
 
-// foreground computes foreground color in original style
+// getBit returns the n-th bit (0-indexed) from source
+func (identicon *ClassicIdenticon) getBit(n int) bool {
+	if len(identicon.source) == 0 || n < 0 {
+		return false
+	}
+	byteIndex := n / 8
+	bitIndex := n % 8
+	if byteIndex >= len(identicon.source) {
+		return false
+	}
+	return (identicon.source[byteIndex]>>bitIndex)&1 == 1
+}
+
+// getByte returns the n-th byte, wraps around if needed
+func (identicon *ClassicIdenticon) getByte(n int) byte {
+	if len(identicon.source) == 0 {
+		return 0
+	}
+	return identicon.source[n%len(identicon.source)]
+}
+
+// foreground computes primary color
 func (identicon *ClassicIdenticon) foreground() color.Color {
 	if len(identicon.source) < 32 {
 		return color.RGBA{0, 0, 0, 255}
 	}
 
-	h1 := (uint16(identicon.source[28]) & 0x0f) << 8
-	h2 := uint16(identicon.source[29])
-	h := uint32(h1 | h2)
-	s := uint32(identicon.source[30])
-	l := uint32(identicon.source[31])
+	// Use bit 255 to decide: 0 → original HSL, 1 → palette
+	if !identicon.getBit(255) {
+		// Original HSL algorithm — soft and harmonious
+		h1 := (uint16(identicon.getByte(28)) & 0x0f) << 8
+		h2 := uint16(identicon.getByte(29))
+		h := uint32(h1 | h2)
+		s := uint32(identicon.getByte(30))
+		l := uint32(identicon.getByte(31))
 
-	hue := mapValue(h, 0, 4095, 0, 360)
-	sat := mapValue(s, 0, 255, 0, 20)
-	lum := mapValue(l, 0, 255, 0, 20)
+		hue := mapValue(h, 0, 4095, 0, 360)
+		sat := mapValue(s, 0, 255, 0, 20)
+		lum := mapValue(l, 0, 255, 0, 20)
 
-	return identicon.hslToRgb(hue, 65.0-sat, 75.0-lum)
+		return identicon.hslToRgb(hue, 65.0-sat, 75.0-lum)
+	}
+
+	// Vibrant color palette — 16 beautiful, distinct colors
+	palette := []color.RGBA{
+		{0x00, 0xbf, 0x93, 0xff}, // turquoise
+		{0x2d, 0xcc, 0x70, 0xff}, // mint
+		{0x42, 0xe4, 0x53, 0xff}, // green
+		{0xf1, 0xc4, 0x0f, 0xff}, // yellowOrange
+		{0xe6, 0x7f, 0x22, 0xff}, // brown
+		{0xff, 0x94, 0x4e, 0xff}, // orange
+		{0xe8, 0x4c, 0x3d, 0xff}, // red
+		{0x35, 0x98, 0xdb, 0xff}, // blue
+		{0x9a, 0x59, 0xb5, 0xff}, // purple
+		{0xef, 0x3e, 0x96, 0xff}, // magenta
+		{0xdf, 0x21, 0xb9, 0xff}, // violet
+		{0x7d, 0xc2, 0xd2, 0xff}, // lightBlue
+		{0x16, 0xa0, 0x86, 0xff}, // turquoiseIntense
+		{0x27, 0xae, 0x61, 0xff}, // mintIntense
+		{0x24, 0xc3, 0x33, 0xff}, // greenIntense
+		{0x1c, 0xab, 0xbb, 0xff}, // lightBlueIntense
+	}
+
+	// Use bits 248-251 to select color (4 bits → 16 colors)
+	colorIndex := 0
+	for i := 0; i < 4; i++ {
+		if identicon.getBit(248 + i) {
+			colorIndex |= 1 << i
+		}
+	}
+	return palette[colorIndex%len(palette)]
+}
+
+// secondaryColor computes second color (for 2-color mode)
+func (identicon *ClassicIdenticon) secondaryColor() color.Color {
+	if len(identicon.source) < 32 {
+		return color.RGBA{100, 100, 100, 255}
+	}
+
+	// Use different bits: 244-247 for second color
+	colorIndex := 0
+	for i := 0; i < 4; i++ {
+		if identicon.getBit(244 + i) {
+			colorIndex |= 1 << i
+		}
+	}
+
+	palette := []color.RGBA{
+		{0x34, 0x49, 0x5e, 0xff}, // darkBlue
+		{0x95, 0xa5, 0xa5, 0xff}, // grey
+		{0xd2, 0x54, 0x00, 0xff}, // brownIntense
+		{0xc1, 0x39, 0x2b, 0xff}, // redIntense
+		{0x29, 0x7f, 0xb8, 0xff}, // blueIntense
+		{0x8d, 0x44, 0xad, 0xff}, // purpleIntense
+		{0xbe, 0x12, 0x7e, 0xff}, // violetIntense
+		{0xe5, 0x23, 0x83, 0xff}, // magentaIntense
+		{0x27, 0xae, 0x61, 0xff}, // mintIntense
+		{0x24, 0xc3, 0x33, 0xff}, // greenIntense
+		{0xd9, 0xd9, 0x21, 0xff}, // yellowIntense
+		{0xf3, 0x9c, 0x11, 0xff}, // yellowOrangeIntense
+		{0xff, 0x55, 0x00, 0xff}, // orangeIntense
+		{0x1c, 0xab, 0xbb, 0xff}, // lightBlueIntense
+		{0x23, 0x23, 0x23, 0xff}, // lightBlackIntense
+		{0x7e, 0x8c, 0x8d, 0xff}, // greyIntense
+	}
+
+	return palette[colorIndex%len(palette)]
 }
 
 // hslToRgb converts HSL to RGB in original style
@@ -1259,7 +1392,7 @@ func (identicon *ClassicIdenticon) hueToRgb(a, b, hue float32) float32 {
 	}
 }
 
-// drawRect draws a solid rectangle with direct pixel access
+// drawRect draws a solid rectangle
 func (identicon *ClassicIdenticon) drawRect(img *image.RGBA, x0, y0, x1, y1 int, c color.Color) {
 	rect := img.Bounds()
 	x0 = max(x0, rect.Min.X)
@@ -1291,45 +1424,79 @@ func (identicon *ClassicIdenticon) drawRect(img *image.RGBA, x0, y0, x1, y1 int,
 	}
 }
 
-// generatePixelPattern generates 5x5 symmetric pixel grid
-func (identicon *ClassicIdenticon) generatePixelPattern() []bool {
-	nibbler := NewClassicNibbler(identicon.source)
-	pixels := make([]bool, 25)
+// generatePixelPattern generates 5x5 symmetric pixel grid — using individual bits
+// Returns two layers: primary and secondary
+func (identicon *ClassicIdenticon) generatePixelPattern() ([]bool, []bool) {
+	primary := make([]bool, 25)
+	secondary := make([]bool, 25)
 
+	// Use bits 0-14 for primary pattern (15 bits)
+	bitIndex := 0
 	for row := 0; row < 5; row++ {
 		for col := 0; col < 3; col++ {
-			paint := false
-			if next := nibbler.Next(); next != nil {
-				paint = *next%2 == 0
-			}
+			paint := identicon.getBit(bitIndex)
+			bitIndex++
 
 			ix := row*5 + col
 			mirrorIx := row*5 + (4 - col)
-			pixels[ix] = paint
-			pixels[mirrorIx] = paint
+			primary[ix] = paint
+			primary[mirrorIx] = paint
 		}
 	}
 
-	return pixels
+	// Use bits 15-29 for secondary pattern (next 15 bits)
+	for row := 0; row < 5; row++ {
+		for col := 0; col < 3; col++ {
+			paint := identicon.getBit(bitIndex)
+			bitIndex++
+
+			ix := row*5 + col
+			mirrorIx := row*5 + (4 - col)
+			secondary[ix] = paint
+			secondary[mirrorIx] = paint
+		}
+	}
+
+	return primary, secondary
 }
 
 // Generate creates the identicon for UI display (respects theme)
 func (identicon *ClassicIdenticon) Generate() image.Image {
 	const (
-		pixelSize  = 18 // Adjusted for 128x128
+		pixelSize  = 36
 		spriteSize = 5
-		margin     = (128 - pixelSize*spriteSize) / 2
+		margin     = (256 - pixelSize*spriteSize) / 2
 	)
 
-	fg := identicon.foreground()
+	primaryColor := identicon.foreground()
+	secondaryColor := identicon.secondaryColor()
 	img := image.NewRGBA(image.Rect(0, 0, identicon.size, identicon.size))
 
-	// Background adapts to theme
+	// Background adapts to theme — use bits 252-254 to pick variation
+	bgChoice := 0
+	for i := 0; i < 3; i++ {
+		if identicon.getBit(252 + i) {
+			bgChoice |= 1 << i
+		}
+	}
+	bgChoice %= 3
+
+	lightBackgrounds := []color.RGBA{
+		{255, 255, 255, 255}, // pure white
+		{243, 245, 247, 255}, // light1
+		{236, 240, 241, 255}, // light2
+	}
+	darkBackgrounds := []color.RGBA{
+		{30, 30, 30, 255},    // dark gray
+		{45, 62, 80, 255},     // darkBlueIntense
+		{57, 57, 57, 255},     // dark2
+	}
+
 	var bg color.RGBA
 	if fyne.CurrentApp().Settings().ThemeVariant() == theme.VariantDark {
-		bg = color.RGBA{30, 30, 30, 255}
+		bg = darkBackgrounds[bgChoice]
 	} else {
-		bg = color.RGBA{255, 255, 255, 255}
+		bg = lightBackgrounds[bgChoice]
 	}
 
 	for i := 0; i < len(img.Pix); i += 4 {
@@ -1339,14 +1506,26 @@ func (identicon *ClassicIdenticon) Generate() image.Image {
 		img.Pix[i+3] = bg.A
 	}
 
-	pixels := identicon.generatePixelPattern()
+	primaryPixels, secondaryPixels := identicon.generatePixelPattern()
 
+	// Draw secondary pixels first (background layer)
 	for row := 0; row < spriteSize; row++ {
 		for col := 0; col < spriteSize; col++ {
-			if pixels[row*spriteSize+col] {
+			if secondaryPixels[row*spriteSize+col] {
 				x := col*pixelSize + margin
 				y := row*pixelSize + margin
-				identicon.drawRect(img, x, y, x+pixelSize, y+pixelSize, fg)
+				identicon.drawRect(img, x, y, x+pixelSize, y+pixelSize, secondaryColor)
+			}
+		}
+	}
+
+	// Draw primary pixels on top (foreground layer)
+	for row := 0; row < spriteSize; row++ {
+		for col := 0; col < spriteSize; col++ {
+			if primaryPixels[row*spriteSize+col] {
+				x := col*pixelSize + margin
+				y := row*pixelSize + margin
+				identicon.drawRect(img, x, y, x+pixelSize, y+pixelSize, primaryColor)
 			}
 		}
 	}
@@ -1354,7 +1533,75 @@ func (identicon *ClassicIdenticon) Generate() image.Image {
 	return img
 }
 
-// Helper functions min/max
+// GenerateForExport generates identicon with fixed background for saving
+func (identicon *ClassicIdenticon) GenerateForExport(transparent bool) image.Image {
+	const (
+		pixelSize  = 36
+		spriteSize = 5
+		margin     = (256 - pixelSize*spriteSize) / 2
+	)
+
+	primaryColor := identicon.foreground()
+	secondaryColor := identicon.secondaryColor()
+	img := image.NewRGBA(image.Rect(0, 0, identicon.size, identicon.size))
+
+	// Set export background
+	var bg color.RGBA
+	if transparent {
+		bg = color.RGBA{0, 0, 0, 0} // fully transparent
+	} else {
+		// Use bits 252-254 for background choice
+		bgChoice := 0
+		for i := 0; i < 3; i++ {
+			if identicon.getBit(252 + i) {
+				bgChoice |= 1 << i
+			}
+		}
+		bgChoice %= 3
+
+		lightBackgrounds := []color.RGBA{
+			{255, 255, 255, 255},
+			{243, 245, 247, 255},
+			{236, 240, 241, 255},
+		}
+		bg = lightBackgrounds[bgChoice]
+	}
+
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i] = bg.R
+		img.Pix[i+1] = bg.G
+		img.Pix[i+2] = bg.B
+		img.Pix[i+3] = bg.A
+	}
+
+	primaryPixels, secondaryPixels := identicon.generatePixelPattern()
+
+	// Draw secondary pixels first
+	for row := 0; row < spriteSize; row++ {
+		for col := 0; col < spriteSize; col++ {
+			if secondaryPixels[row*spriteSize+col] {
+				x := col*pixelSize + margin
+				y := row*pixelSize + margin
+				identicon.drawRect(img, x, y, x+pixelSize, y+pixelSize, secondaryColor)
+			}
+		}
+	}
+
+	// Draw primary pixels on top
+	for row := 0; row < spriteSize; row++ {
+		for col := 0; col < spriteSize; col++ {
+			if primaryPixels[row*spriteSize+col] {
+				x := col*pixelSize + margin
+				y := row*pixelSize + margin
+				identicon.drawRect(img, x, y, x+pixelSize, y+pixelSize, primaryColor)
+			}
+		}
+	}
+
+	return img
+}
+
+// Helper functions
 func min(a, b int) int {
 	if a < b {
 		return a
