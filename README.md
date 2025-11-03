@@ -35,7 +35,6 @@ sudo systemctl status pcscd
 
 ![yubicrypt](img/1.png)
 
-## --
 If you like yubicrypt consider a small donation  
 in crypto currencies or buy me a coffee.
 ```  
@@ -46,6 +45,7 @@ XMR: 45TJx8ZHngM4GuNfYxRw7R7vRyFgfMVp862JqycMrPmyfTfJAYcQGEzT27wL1z5RG1b5XfRPJk9
 <a href="https://www.buymeacoffee.com/Ch1ffr3punk" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-yellow.png" alt="Buy Me A Coffee" height="41" width="174"></a>
 
 yubicrypt is dedicated to Alice and Bob.
+
 
 
 
