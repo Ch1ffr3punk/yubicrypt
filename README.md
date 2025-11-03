@@ -35,15 +35,18 @@ sudo systemctl status pcscd
 
 ![yubicrypt](img/1.png)
 
-If you like yubicrypt, as much as I do, consider a small donation.  
+## --
+If you like yubicrypt consider a small donation  
+in crypto currencies or buy me a coffee.
 ```  
-BTC: bc1qhgek8p5qcwz7r6502y8tvenkpsw9w5yafhatxk  
+BTC: bc1qhgek8p5qcwz7r6502y8tvenkpsw9w5yafhatxk 
 Nym: n1yql04xjhmlhfkjsk8x8g7fynm27xzvnk23wfys  
 XMR: 45TJx8ZHngM4GuNfYxRw7R7vRyFgfMVp862JqycMrPmyfTfJAYcQGEzT27wL1z5RG1b5XfRPJk97KeZr1svK8qES2z1uZrS
 ```
-Or, if you prefer, [buy me a coffee.](https://buymeacoffee.com/ch1ffr3punk)  
+<a href="https://www.buymeacoffee.com/Ch1ffr3punk" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-yellow.png" alt="Buy Me A Coffee" height="41" width="174"></a>
 
 yubicrypt is dedicated to Alice and Bob.
+
 
 
 
