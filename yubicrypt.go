@@ -1258,29 +1258,22 @@ func (identicon *ClassicIdenticon) getByte(n int) byte {
 	return identicon.source[n%len(identicon.source)]
 }
 
-// foreground computes primary color
+// foreground computes primary color using indexed palette (same as identicons program)
 func (identicon *ClassicIdenticon) foreground() color.Color {
 	if len(identicon.source) < 32 {
 		return color.RGBA{0, 0, 0, 255}
 	}
 
-	// Use bit 255 to decide: 0 → original HSL, 1 → palette
-	if !identicon.getBit(255) {
-		// Original HSL algorithm — soft and harmonious
-		h1 := (uint16(identicon.getByte(28)) & 0x0f) << 8
-		h2 := uint16(identicon.getByte(29))
-		h := uint32(h1 | h2)
-		s := uint32(identicon.getByte(30))
-		l := uint32(identicon.getByte(31))
-
-		hue := mapValue(h, 0, 4095, 0, 360)
-		sat := mapValue(s, 0, 255, 0, 20)
-		lum := mapValue(l, 0, 255, 0, 20)
-
-		return identicon.hslToRgb(hue, 65.0-sat, 75.0-lum)
+	// Primary color index (4 bits → 16 colors) - EXACTLY like identicons program
+	colorIndex := 0
+	for i := 0; i < 4; i++ {
+		if identicon.getBit(248 + i) {
+			colorIndex |= 1 << i
+		}
 	}
+	colorIndex %= 16
 
-	// Vibrant color palette — 16 beautiful, distinct colors
+	// Vibrant color palette — 16 beautiful, distinct colors (SAME as identicons program)
 	palette := []color.RGBA{
 		{0x00, 0xbf, 0x93, 0xff}, // turquoise
 		{0x2d, 0xcc, 0x70, 0xff}, // mint
@@ -1300,30 +1293,25 @@ func (identicon *ClassicIdenticon) foreground() color.Color {
 		{0x1c, 0xab, 0xbb, 0xff}, // lightBlueIntense
 	}
 
-	// Use bits 248-251 to select color (4 bits → 16 colors)
-	colorIndex := 0
-	for i := 0; i < 4; i++ {
-		if identicon.getBit(248 + i) {
-			colorIndex |= 1 << i
-		}
-	}
-	return palette[colorIndex%len(palette)]
+	return palette[colorIndex]
 }
 
-// secondaryColor computes second color (for 2-color mode)
+// secondaryColor computes second color using indexed palette (same as identicons program)
 func (identicon *ClassicIdenticon) secondaryColor() color.Color {
 	if len(identicon.source) < 32 {
 		return color.RGBA{100, 100, 100, 255}
 	}
 
-	// Use different bits: 244-247 for second color
+	// Secondary color index (4 bits → 16 colors) - EXACTLY like identicons program
 	colorIndex := 0
 	for i := 0; i < 4; i++ {
 		if identicon.getBit(244 + i) {
 			colorIndex |= 1 << i
 		}
 	}
+	colorIndex %= 16
 
+	// Secondary color palette — 16 distinct colors (SAME as identicons program)
 	palette := []color.RGBA{
 		{0x34, 0x49, 0x5e, 0xff}, // darkBlue
 		{0x95, 0xa5, 0xa5, 0xff}, // grey
@@ -1343,7 +1331,7 @@ func (identicon *ClassicIdenticon) secondaryColor() color.Color {
 		{0x7e, 0x8c, 0x8d, 0xff}, // greyIntense
 	}
 
-	return palette[colorIndex%len(palette)]
+	return palette[colorIndex]
 }
 
 // hslToRgb converts HSL to RGB in original style
@@ -1472,9 +1460,9 @@ func (identicon *ClassicIdenticon) Generate() image.Image {
 	secondaryColor := identicon.secondaryColor()
 	img := image.NewRGBA(image.Rect(0, 0, identicon.size, identicon.size))
 
-	// Background adapts to theme — use bits 252-254 to pick variation
+	// Background adapts to theme — use bits 252-253 to pick variation (2 bits → 3 options)
 	bgChoice := 0
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 2; i++ { // Nur 2 Bits verwenden wie in identicons program
 		if identicon.getBit(252 + i) {
 			bgChoice |= 1 << i
 		}
@@ -1488,8 +1476,8 @@ func (identicon *ClassicIdenticon) Generate() image.Image {
 	}
 	darkBackgrounds := []color.RGBA{
 		{30, 30, 30, 255},    // dark gray
-		{45, 62, 80, 255},     // darkBlueIntense
-		{57, 57, 57, 255},     // dark2
+		{45, 62, 80, 255},    // darkBlueIntense
+		{57, 57, 57, 255},    // dark2
 	}
 
 	var bg color.RGBA
@@ -1550,9 +1538,9 @@ func (identicon *ClassicIdenticon) GenerateForExport(transparent bool) image.Ima
 	if transparent {
 		bg = color.RGBA{0, 0, 0, 0} // fully transparent
 	} else {
-		// Use bits 252-254 for background choice
+		// Use bits 252-253 for background choice (2 bits → 3 options)
 		bgChoice := 0
-		for i := 0; i < 3; i++ {
+		for i := 0; i < 2; i++ {
 			if identicon.getBit(252 + i) {
 				bgChoice |= 1 << i
 			}
