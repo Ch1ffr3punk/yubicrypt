@@ -107,7 +107,7 @@ func main() {
 		encryptionUsed: false,
 	}
 	gui.window = gui.app.NewWindow("yubicrypt")
-	gui.window.Resize(fyne.NewSize(800, 600))
+	gui.window.Resize(fyne.NewSize(600, 600))
 	gui.createUI()
 	gui.applyTheme()
 	gui.window.SetContent(gui.createMainUI())
@@ -888,7 +888,7 @@ func formatByteSize(bytes int) string {
 
 // securePadMessage adds ISO/IEC 7816-4 padding to align data to 1024-byte blocks
 func securePadMessage(data []byte) []byte {
-	const blockSize = 1024  // Changed from 4096 to 1024
+	const blockSize = 4096
 	paddingNeeded := blockSize - (len(data) % blockSize)
 	if paddingNeeded == blockSize {
 		return data
@@ -904,7 +904,7 @@ func secureUnpadMessage(data []byte) ([]byte, error) {
 	if len(data) == 0 {
 		return nil, errors.New("cannot unpad empty data")
 	}
-	if len(data)%1024 != 0 {  // Changed from 4096 to 1024
+	if len(data)%4096 != 0 {
 		return nil, errors.New("invalid block size for unpadding")
 	}
 	lastIndex := -1
