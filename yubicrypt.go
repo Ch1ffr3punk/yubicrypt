@@ -22,6 +22,7 @@ import (
 	"image/color"
 	"math"
 	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -36,6 +37,7 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+
 	"github.com/awnumar/memguard"
 	"github.com/go-piv/piv-go/v2/piv"
 )
@@ -91,6 +93,7 @@ type GUI struct {
 	app            fyne.App
 	window         fyne.Window
 	themeToggle    *widget.Button
+	infoBtn        *widget.Button
 	textArea       *widget.Entry
 	pinEntry       *widget.Entry
 	statusLabel    *widget.Label
@@ -101,11 +104,13 @@ type GUI struct {
 
 func main() {
 	defer memguard.Purge()
+
 	gui := &GUI{
 		app:            app.NewWithID("oc2mx.net.yubicrypt"),
 		currentTheme:   "dark",
 		encryptionUsed: false,
 	}
+
 	gui.window = gui.app.NewWindow("yubicrypt")
 	gui.window.Resize(fyne.NewSize(600, 600))
 	gui.createUI()
@@ -117,6 +122,7 @@ func main() {
 // createUI initializes all UI components
 func (g *GUI) createUI() {
 	monospace := &fyne.TextStyle{Monospace: true}
+
 	g.textArea = widget.NewMultiLineEntry()
 	g.textArea.Wrapping = fyne.TextWrapOff
 	g.textArea.TextStyle = *monospace
@@ -136,6 +142,9 @@ func (g *GUI) createUI() {
 
 	// Theme toggle button with emoji (starts with Sun for dark mode)
 	g.themeToggle = widget.NewButton("☀️", g.toggleTheme)
+
+	// Info Button (top left)
+	g.infoBtn = widget.NewButtonWithIcon("", theme.InfoIcon(), g.showInfoPopup)
 }
 
 // createMainUI builds the main layout
@@ -143,13 +152,10 @@ func (g *GUI) createMainUI() fyne.CanvasObject {
 	// Buttons without icons, new order
 	signTextBtn := widget.NewButton("Sign", g.onSignText)
 	padBtn := widget.NewButton("Pad", g.onPad)
-	
 	encryptBtn := widget.NewButton("Encrypt", g.onEncrypt)
 	encryptBtn.Importance = widget.HighImportance // Blue
-	
 	decryptBtn := widget.NewButton("Decrypt", g.onDecrypt)
 	decryptBtn.Importance = widget.HighImportance // Blue
-	
 	unpadBtn := widget.NewButton("Unpad", g.onUnpad)
 	verifyTextBtn := widget.NewButton("Verify", g.onVerifyText)
 
@@ -177,12 +183,16 @@ func (g *GUI) createMainUI() fyne.CanvasObject {
 		),
 	)
 
+	// Top Bar: Info (Left), Theme (Right)
+	topBar := container.NewHBox(
+		g.infoBtn,
+		layout.NewSpacer(),
+		g.themeToggle,
+	)
+
 	mainContainer := container.NewBorder(
 		container.NewVBox(
-			container.NewHBox(
-				layout.NewSpacer(),
-				g.themeToggle,
-			),
+			topBar,
 			buttonContainer,
 			widget.NewSeparator(),
 		),
@@ -195,6 +205,7 @@ func (g *GUI) createMainUI() fyne.CanvasObject {
 		nil,
 		container.NewScroll(g.textArea),
 	)
+
 	return mainContainer
 }
 
@@ -222,17 +233,51 @@ func (g *GUI) applyTheme() {
 	}
 }
 
+// show info pop-up
+func (g *GUI) showInfoPopup() {
+	projURL, _ := url.Parse("https://github.com/Ch1ffr3punk/yubicrypt")
+	projectLink := widget.NewHyperlink("An Open Source project", projURL)
+
+	okButton := widget.NewButton("OK", func() {
+		// Dialog schließen
+		g.window.Canvas().Overlays().Remove(g.window.Canvas().Overlays().Top())
+	})
+	okButton.Importance = widget.HighImportance
+
+	content := container.NewVBox(
+		widget.NewLabelWithStyle("yubicrypt v0.1.8", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewSeparator(),
+		container.NewHBox(
+			layout.NewSpacer(),
+			projectLink,
+			layout.NewSpacer(),
+		),
+		widget.NewLabelWithStyle("released under the Apache 2.0 license", fyne.TextAlignCenter, fyne.TextStyle{}),
+		widget.NewLabelWithStyle("© 2026 Ch1ffr3punk", fyne.TextAlignCenter, fyne.TextStyle{}),
+		widget.NewLabel(""),
+		container.NewHBox(
+			layout.NewSpacer(),
+			okButton,
+			layout.NewSpacer(),
+		),
+	)
+
+	dialog.ShowCustom("", "", content, g.window)
+}
+
 // onSignText triggers the signing process for text in the GUI
 func (g *GUI) onSignText() {
 	if g.pinEntry.Text == "" {
 		g.statusLabel.SetText("Error: PIN required for signing")
 		return
 	}
+
 	input := g.textArea.Text
 	if input == "" {
 		g.statusLabel.SetText("Error: No text to sign")
 		return
 	}
+
 	// Check for existing signature to prevent double signing
 	s := string(input)
 	for algo := range supportedAlgorithms {
@@ -241,12 +286,14 @@ func (g *GUI) onSignText() {
 			return
 		}
 	}
+
 	// Sign data in the text area
 	result, err := g.signData([]byte(input), g.pinEntry.Text)
 	if err != nil {
 		g.statusLabel.SetText("Signing failed: " + err.Error())
 		return
 	}
+
 	g.textArea.SetText(result)
 	g.statusLabel.SetText("✓ Message signed successfully (" + formatByteSize(len(input)) + ")")
 }
@@ -258,11 +305,13 @@ func (g *GUI) onVerifyText() {
 		g.statusLabel.SetText("Error: No text to verify")
 		return
 	}
+
 	err := g.verifyData([]byte(input))
 	if err != nil {
 		g.statusLabel.SetText("Verification failed: " + err.Error())
 		return
 	}
+
 	g.statusLabel.SetText("✓ Signature is valid")
 }
 
@@ -274,22 +323,26 @@ func (g *GUI) onEncrypt() {
 		g.choosePublicKey()
 		return
 	}
+
 	if g.publicKeyPath != "" {
 		input := g.textArea.Text
 		if input == "" {
 			g.statusLabel.SetText("Error: No text to encrypt")
 			return
 		}
+
 		result, err := g.encryptData([]byte(input), g.publicKeyPath)
 		if err != nil {
 			g.statusLabel.SetText("Encryption failed: " + err.Error())
 			return
 		}
+
 		g.encryptionUsed = true
 		g.textArea.SetText(result)
 		g.statusLabel.SetText("✓ Encrypted with: " + filepath.Base(g.publicKeyPath))
 		return
 	}
+
 	g.choosePublicKey()
 }
 
@@ -304,24 +357,29 @@ func (g *GUI) choosePublicKey() {
 			return
 		}
 		defer reader.Close()
+
 		path := reader.URI().Path()
 		if filepath.Ext(path) != ".pem" {
 			g.statusLabel.SetText("Error: Please select a .pem file")
 			return
 		}
+
 		g.publicKeyPath = path
 		g.encryptionUsed = false
 		g.statusLabel.SetText("Selected public key: " + filepath.Base(path) + " - Encrypting...")
+
 		input := g.textArea.Text
 		if input == "" {
 			g.statusLabel.SetText("Selected: " + filepath.Base(path) + " - No text to encrypt")
 			return
 		}
+
 		result, err := g.encryptData([]byte(input), g.publicKeyPath)
 		if err != nil {
 			g.statusLabel.SetText("Encryption failed: %v" + err.Error())
 			return
 		}
+
 		g.encryptionUsed = true
 		g.textArea.SetText(result)
 		g.statusLabel.SetText("✓ Encrypted with: " + filepath.Base(path))
@@ -334,16 +392,19 @@ func (g *GUI) onDecrypt() {
 		g.statusLabel.SetText("Error: PIN required for decryption")
 		return
 	}
+
 	input := g.textArea.Text
 	if input == "" {
 		g.statusLabel.SetText("Error: No text to decrypt")
 		return
 	}
+
 	result, err := g.decryptData([]byte(input), g.pinEntry.Text)
 	if err != nil {
 		g.statusLabel.SetText("Decryption failed: " + err.Error())
 		return
 	}
+
 	g.textArea.SetText(string(result))
 	g.statusLabel.SetText("✓ Message decrypted successfully")
 }
@@ -353,10 +414,12 @@ func (g *GUI) onClear() {
 	g.textArea.SetText("")
 	g.publicKeyPath = ""
 	g.encryptionUsed = false
+
 	clipboard := g.app.Clipboard()
 	if clipboard != nil {
 		clipboard.SetContent("")
 	}
+
 	g.statusLabel.SetText("Cleared text area, clipboard and reset encryption state")
 }
 
@@ -372,17 +435,21 @@ func safePad(b []byte, size int) []byte {
 func (g *GUI) signData(data []byte, pin string) (string, error) {
 	pinGuard := memguard.NewBufferFromBytes([]byte(pin))
 	defer pinGuard.Destroy()
+
 	// Normalize line endings to RFC-compliant CRLF before hashing
 	normalizedData := normalizeToRFCCompliantCRLF(data)
+
 	// Display status that we're hashing large document
 	if len(normalizedData) > 1024*1024 { // > 1MB
 		g.statusLabel.SetText("Hashing large document (" + formatByteSize(len(normalizedData)) + ")...")
 		g.window.Canvas().Refresh(g.statusLabel)
 	}
+
 	sig, algo, err := g.signDataInternal(pinGuard.Bytes(), normalizedData)
 	if err != nil {
 		return "", fmt.Errorf("signing failed: %v", err)
 	}
+
 	// Ensure clean separation with CRLF
 	sep := "\r\n"
 	if len(normalizedData) > 0 {
@@ -391,6 +458,7 @@ func (g *GUI) signData(data []byte, pin string) (string, error) {
 			sep = "\n"
 		}
 	}
+
 	return string(normalizedData) + sep +
 		"-----BEGIN " + algo + " SIGNATURE-----" + sep +
 		formatSignatureRFC(sig) +
@@ -405,27 +473,33 @@ func (g *GUI) signDataInternal(pin, data []byte) (string, string, error) {
 		return "", "", err
 	}
 	defer yk.Close()
+
 	cert, err := yk.Certificate(piv.SlotSignature)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get certificate from signature slot: %v", err)
 	}
+
 	// Handle Ed25519 signing
 	if ed25519PubKey, ok := cert.PublicKey.(ed25519.PublicKey); ok {
 		// Ed25519 signs the hash of the data, not the raw data (YubiKey requirement)
 		hash := sha256.Sum256(data)
 		return g.signEd25519Data(string(pin), hash[:], ed25519PubKey, yk)
 	}
+
 	// Handle ECDSA signing
 	pubKey, ok := cert.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
 		return "", "", fmt.Errorf("public key is not ECDSA or Ed25519")
 	}
+
 	// Algorithm name is "ECCP256", not "P-256"
 	algorithm, exists := curveToAlgorithm[pubKey.Curve]
 	if !exists {
 		return "", "", fmt.Errorf("unsupported curve: %v", pubKey.Curve)
 	}
+
 	hashFunc := curveToHash[pubKey.Curve]
+
 	// Create hash of the data for ECDSA signing
 	var digest []byte
 	switch hashFunc {
@@ -440,30 +514,37 @@ func (g *GUI) signDataInternal(pin, data []byte) (string, string, error) {
 	default:
 		return "", "", fmt.Errorf("unsupported hash algorithm for curve")
 	}
+
 	auth := piv.KeyAuth{PIN: string(pin)}
 	priv, err := yk.PrivateKey(piv.SlotSignature, cert.PublicKey, auth)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get private key: %v", err)
 	}
+
 	signer, ok := priv.(crypto.Signer)
 	if !ok {
 		return "", "", fmt.Errorf("key does not implement crypto.Signer")
 	}
+
 	asn1sig, err := signer.Sign(rand.Reader, digest, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("signing failed: %v", err)
 	}
+
 	var sig ecSignature
 	if _, err := asn1.Unmarshal(asn1sig, &sig); err != nil {
 		return "", "", fmt.Errorf("ASN.1 unmarshal failed: %v", err)
 	}
+
 	curveSize := (pubKey.Curve.Params().BitSize + 7) / 8
+
 	// Build combined signature: X || Y || R || S (all padded to curveSize)
 	var raw []byte
 	raw = append(raw, safePad(pubKey.X.Bytes(), curveSize)...)
 	raw = append(raw, safePad(pubKey.Y.Bytes(), curveSize)...)
 	raw = append(raw, safePad(sig.R.Bytes(), curveSize)...)
 	raw = append(raw, safePad(sig.S.Bytes(), curveSize)...)
+
 	return hex.EncodeToString(raw), algorithm, nil
 }
 
@@ -474,15 +555,19 @@ func (g *GUI) signEd25519Data(pin string, hash []byte, pubKey ed25519.PublicKey,
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get private key: %v", err)
 	}
+
 	signer, ok := priv.(crypto.Signer)
 	if !ok {
 		return "", "", fmt.Errorf("key does not implement crypto.Signer")
 	}
+
 	signature, err := signer.Sign(rand.Reader, hash, crypto.Hash(0))
 	if err != nil {
 		return "", "", fmt.Errorf("Ed25519 signing failed: %v", err)
 	}
+
 	combined := append(pubKey, signature...)
+
 	return hex.EncodeToString(combined), AlgorithmED25519, nil
 }
 
@@ -490,14 +575,17 @@ func (g *GUI) signEd25519Data(pin string, hash []byte, pubKey ed25519.PublicKey,
 func (g *GUI) verifyData(data []byte) error {
 	// Normalize input to handle both LF and CRLF
 	s := string(normalizeToRFCCompliantCRLF(data))
+
 	var algorithm string
 	var beg, end string
+
 	// Try to find BEGIN/END block with CRLF or LF
 	for algo := range supportedAlgorithms {
 		begCRLF := "\r\n-----BEGIN " + algo + " SIGNATURE-----\r\n"
 		endCRLF := "-----END " + algo + " SIGNATURE-----\r\n"
 		begLF := "\n-----BEGIN " + algo + " SIGNATURE-----\n"
 		endLF := "-----END " + algo + " SIGNATURE-----\n"
+
 		if strings.Contains(s, begCRLF) {
 			algorithm = algo
 			beg = begCRLF
@@ -510,29 +598,35 @@ func (g *GUI) verifyData(data []byte) error {
 			break
 		}
 	}
+
 	if algorithm == "" {
 		g.showErrorPopup("No supported signature found", []byte{}, "")
 		return fmt.Errorf("no supported signature block found")
 	}
+
 	i := strings.Index(s, beg)
 	j := strings.Index(s, end)
 	if i == -1 || j == -1 || j <= i {
 		g.showErrorPopup("Invalid signature format", []byte{}, algorithm)
 		return fmt.Errorf("invalid signature block format")
 	}
+
 	originalMessage := []byte(s[:i])
 	hexPart := s[i+len(beg) : j]
 	hexPart = regexp.MustCompile(`[\r\n\s\t]+`).ReplaceAllString(hexPart, "")
+
 	combined, err := hex.DecodeString(hexPart)
 	if err != nil {
 		g.showErrorPopup("Hex decoding failed", []byte{}, algorithm)
 		return fmt.Errorf("hex decode failed: %v", err)
 	}
+
 	// Status for large files
 	if len(originalMessage) > 1024*1024 {
 		g.statusLabel.SetText("Verifying large document (" + formatByteSize(len(originalMessage)) + ")...")
 		g.window.Canvas().Refresh(g.statusLabel)
 	}
+
 	var verificationErr error
 	switch algorithm {
 	case AlgorithmED25519:
@@ -543,18 +637,22 @@ func (g *GUI) verifyData(data []byte) error {
 	default:
 		verificationErr = fmt.Errorf("unsupported algorithm: %s", algorithm)
 	}
+
 	if verificationErr != nil {
 		publicKeyBytes, _ := extractPublicKeyFromSignature(combined, algorithm)
 		g.showErrorPopup("Signature verification failed: "+verificationErr.Error(), publicKeyBytes, algorithm)
 		return verificationErr
 	}
+
 	publicKeyBytes, err := extractPublicKeyFromSignature(combined, algorithm)
 	if err != nil {
 		g.showErrorPopup("Error extracting public key: "+err.Error(), []byte{}, algorithm)
 		return err
 	}
+
 	// Successfully verified - show identicon from public key (hashed!)
 	g.showSuccessPopup(publicKeyBytes, algorithm)
+
 	return nil
 }
 
@@ -567,6 +665,7 @@ func extractPublicKeyFromSignature(combined []byte, algorithm string) ([]byte, e
 		}
 		// Return only the public key (first 32 bytes)
 		return combined[:Ed25519PublicKeySize], nil
+
 	case AlgorithmECCP256, AlgorithmECCP384:
 		var curve elliptic.Curve
 		switch algorithm {
@@ -577,13 +676,17 @@ func extractPublicKeyFromSignature(combined []byte, algorithm string) ([]byte, e
 		default:
 			return nil, fmt.Errorf("unsupported ECDSA algorithm: %s", algorithm)
 		}
+
 		curveSize := (curve.Params().BitSize + 7) / 8
 		expectedBytes := 4 * curveSize
+
 		if len(combined) != expectedBytes {
 			return nil, fmt.Errorf("invalid signature block size: expected %d, got %d", expectedBytes, len(combined))
 		}
+
 		// Return only the public key (X || Y)
 		return combined[:2*curveSize], nil
+
 	default:
 		return nil, fmt.Errorf("unsupported algorithm: %s", algorithm)
 	}
@@ -594,11 +697,14 @@ func (g *GUI) verifyEd25519(dataHash, combined []byte) error {
 	if len(combined) != Ed25519CombinedSize {
 		return fmt.Errorf("invalid Ed25519 signature block")
 	}
+
 	publicKey := combined[:Ed25519PublicKeySize]
 	signature := combined[Ed25519PublicKeySize:]
+
 	if !ed25519.Verify(ed25519.PublicKey(publicKey), dataHash, signature) {
 		return fmt.Errorf("Ed25519 signature verification failed")
 	}
+
 	return nil
 }
 
@@ -606,6 +712,7 @@ func (g *GUI) verifyEd25519(dataHash, combined []byte) error {
 func (g *GUI) verifyECDSA(data, combined []byte, algorithm string) error {
 	var curve elliptic.Curve
 	var hashFunc crypto.Hash
+
 	switch algorithm {
 	case AlgorithmECCP256:
 		curve = elliptic.P256()
@@ -616,23 +723,29 @@ func (g *GUI) verifyECDSA(data, combined []byte, algorithm string) error {
 	default:
 		return fmt.Errorf("unsupported ECDSA algorithm: %s", algorithm)
 	}
+
 	curveSize := (curve.Params().BitSize + 7) / 8
 	expectedBytes := 4 * curveSize
+
 	if len(combined) != expectedBytes {
 		return fmt.Errorf("invalid signature block size: expected %d, got %d", expectedBytes, len(combined))
 	}
+
 	X := new(big.Int).SetBytes(safePad(combined[0:curveSize], curveSize))
 	Y := new(big.Int).SetBytes(safePad(combined[curveSize:2*curveSize], curveSize))
 	R := new(big.Int).SetBytes(safePad(combined[2*curveSize:3*curveSize], curveSize))
 	S := new(big.Int).SetBytes(safePad(combined[3*curveSize:], curveSize))
+
 	if !curve.IsOnCurve(X, Y) {
 		return fmt.Errorf("public key point (X,Y) is not on the curve %s", curve.Params().Name)
 	}
+
 	pub := &ecdsa.PublicKey{
 		Curve: curve,
 		X:     X,
 		Y:     Y,
 	}
+
 	var digest []byte
 	switch hashFunc {
 	case crypto.SHA256:
@@ -644,9 +757,11 @@ func (g *GUI) verifyECDSA(data, combined []byte, algorithm string) error {
 		h.Write(data)
 		digest = h.Sum(nil)
 	}
+
 	if !ecdsa.Verify(pub, digest, R, S) {
 		return fmt.Errorf("signature verification failed")
 	}
+
 	return nil
 }
 
@@ -670,6 +785,7 @@ func extractPublicKeyDisplayBytes(combined []byte, algorithm string) ([]byte, er
 		}
 		// Return full 32 bytes — no stripping
 		return combined[:Ed25519PublicKeySize], nil
+
 	case AlgorithmECCP256, AlgorithmECCP384:
 		var curve elliptic.Curve
 		switch algorithm {
@@ -680,22 +796,29 @@ func extractPublicKeyDisplayBytes(combined []byte, algorithm string) ([]byte, er
 		default:
 			return nil, fmt.Errorf("unsupported ECDSA algorithm: %s", algorithm)
 		}
+
 		curveSize := (curve.Params().BitSize + 7) / 8
 		expectedBytes := 4 * curveSize
+
 		if len(combined) != expectedBytes {
 			return nil, fmt.Errorf("invalid signature block size: expected %d, got %d", expectedBytes, len(combined))
 		}
+
 		// Extract X and Y with leading zeros (as stored)
 		XBytes := combined[0:curveSize]
 		YBytes := combined[curveSize : 2*curveSize]
+
 		// Strip leading zeros for display — but keep at least one byte!
 		XStripped := stripLeadingZeros(XBytes)
 		YStripped := stripLeadingZeros(YBytes)
+
 		// Concatenate stripped X and Y for display/hashing
 		result := make([]byte, 0, len(XStripped)+len(YStripped))
 		result = append(result, XStripped...)
 		result = append(result, YStripped...)
+
 		return result, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported algorithm: %s", algorithm)
 	}
@@ -707,15 +830,20 @@ func (g *GUI) showSuccessPopup(publicKeyBytes []byte, algorithm string) {
 	if err != nil {
 		displayBytes = publicKeyBytes
 	}
+
 	hexString := hex.EncodeToString(displayBytes)
 	hash := sha256.Sum256([]byte(hexString))
+
 	identicon := NewClassicIdenticon(hash[:])
 	img := identicon.Generate()
+
 	fyneImg := canvas.NewImageFromImage(img)
 	fyneImg.FillMode = canvas.ImageFillContain
 	fyneImg.SetMinSize(fyne.NewSize(128, 128))
+
 	successLabel := widget.NewLabel("Signature is valid")
 	successLabel.Alignment = fyne.TextAlignCenter
+
 	copyBtn := widget.NewButton("Copy Signature Component", func() {
 		clipboard := g.app.Clipboard()
 		if clipboard != nil {
@@ -726,11 +854,13 @@ func (g *GUI) showSuccessPopup(publicKeyBytes []byte, algorithm string) {
 			})
 		}
 	})
+
 	content := container.NewVBox(
 		container.NewCenter(fyneImg),
 		container.NewCenter(successLabel),
 		container.NewCenter(copyBtn),
 	)
+
 	d := dialog.NewCustom("", "OK", content, g.window)
 	d.Show()
 }
@@ -740,13 +870,12 @@ func (g *GUI) showErrorPopup(message string, publicKeyBytes []byte, algorithm st
 	if len(publicKeyBytes) == 0 {
 		errorLabel := widget.NewLabel(message)
 		errorLabel.Alignment = fyne.TextAlignCenter
+
 		content := container.NewVBox(container.NewCenter(errorLabel))
 		d := dialog.NewCustom("", "OK", content, g.window)
 		d.Show()
 		return
 	}
-	//d := dialog.NewCustom("", "OK", g.window)
-	//d.Show()
 }
 
 // encryptData encrypts data using RSA-OAEP and AES-GCM
@@ -755,24 +884,31 @@ func (g *GUI) encryptData(data []byte, pubKeyFile string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to load public key: %v", err)
 	}
+
 	aesKeyGuard := memguard.NewBuffer(32)
 	defer aesKeyGuard.Destroy()
+
 	if _, err := rand.Read(aesKeyGuard.Bytes()); err != nil {
 		return "", fmt.Errorf("failed to generate AES key: %v", err)
 	}
+
 	encryptedKey, err := rsa.EncryptPKCS1v15(rand.Reader, pubKey, aesKeyGuard.Bytes())
 	if err != nil {
 		return "", fmt.Errorf("RSA encryption failed: %v", err)
 	}
 	defer memguard.WipeBytes(encryptedKey)
+
 	encryptedData, err := encryptAES(data, aesKeyGuard.Bytes())
 	if err != nil {
 		return "", fmt.Errorf("AES encryption failed: %v", err)
 	}
 	defer memguard.WipeBytes(encryptedData)
+
 	combined := append(encryptedKey, encryptedData...)
 	defer memguard.WipeBytes(combined)
+
 	base64Str := base64.StdEncoding.EncodeToString(combined)
+
 	return formatBase64RFC(base64Str), nil
 }
 
@@ -780,58 +916,72 @@ func (g *GUI) encryptData(data []byte, pubKeyFile string) (string, error) {
 func (g *GUI) decryptData(data []byte, pin string) ([]byte, error) {
 	pinGuard := memguard.NewBufferFromBytes([]byte(pin))
 	defer pinGuard.Destroy()
+
 	s := string(data)
 	s = strings.ReplaceAll(s, "\r\n", "")
 	s = strings.ReplaceAll(s, " ", "")
+
 	combined, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
 		return nil, fmt.Errorf("base64 decode failed: %v", err)
 	}
 	defer memguard.WipeBytes(combined)
+
 	yk, err := openYubiKey(0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open YubiKey: %v", err)
 	}
 	defer yk.Close()
+
 	cert, err := yk.Certificate(piv.SlotKeyManagement)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get certificate from slot 9d: %v", err)
 	}
+
 	rsaPubKey, ok := cert.PublicKey.(*rsa.PublicKey)
 	if !ok {
 		return nil, fmt.Errorf("certificate does not contain RSA public key")
 	}
+
 	if err := checkRSASecurity(rsaPubKey, "on YubiKey"); err != nil {
 		return nil, err
 	}
+
 	keySize := rsaPubKey.Size()
 	if len(combined) < keySize {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
+
 	encryptedKey := combined[:keySize]
 	encryptedData := combined[keySize:]
 	defer memguard.WipeBytes(encryptedKey)
+
 	auth := piv.KeyAuth{PIN: pin}
 	priv, err := yk.PrivateKey(piv.SlotKeyManagement, cert.PublicKey, auth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get private key: %v", err)
 	}
+
 	decrypter, ok := priv.(crypto.Decrypter)
 	if !ok {
 		return nil, fmt.Errorf("private key does not support decryption")
 	}
+
 	decryptedPayload, err := decrypter.Decrypt(rand.Reader, encryptedKey, nil)
 	if err != nil {
 		return nil, fmt.Errorf("RSA decryption failed: %v", err)
 	}
 	defer memguard.WipeBytes(decryptedPayload)
+
 	if len(decryptedPayload) != 32 {
 		return nil, fmt.Errorf("invalid AES key size")
 	}
+
 	decryptedData, err := decryptAES(encryptedData, decryptedPayload)
 	if err != nil {
 		return nil, fmt.Errorf("AES decryption failed: %v", err)
 	}
+
 	return decryptedData, nil
 }
 
@@ -886,16 +1036,18 @@ func formatByteSize(bytes int) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// securePadMessage adds ISO/IEC 7816-4 padding to align data to 1024-byte blocks
+// securePadMessage adds ISO/IEC 7816-4 padding to align data to 4096-byte blocks
 func securePadMessage(data []byte) []byte {
 	const blockSize = 4096
 	paddingNeeded := blockSize - (len(data) % blockSize)
 	if paddingNeeded == blockSize {
 		return data
 	}
+
 	paddedData := make([]byte, len(data)+paddingNeeded)
 	copy(paddedData, data)
 	paddedData[len(data)] = 0x80
+
 	return paddedData
 }
 
@@ -907,6 +1059,7 @@ func secureUnpadMessage(data []byte) ([]byte, error) {
 	if len(data)%4096 != 0 {
 		return nil, errors.New("invalid block size for unpadding")
 	}
+
 	lastIndex := -1
 	for i := len(data) - 1; i >= 0; i-- {
 		if data[i] == 0x80 {
@@ -917,9 +1070,11 @@ func secureUnpadMessage(data []byte) ([]byte, error) {
 			return nil, errors.New("invalid padding format: unexpected non-zero byte")
 		}
 	}
+
 	if lastIndex == -1 {
 		return nil, errors.New("no padding marker found")
 	}
+
 	return data[:lastIndex], nil
 }
 
@@ -929,12 +1084,16 @@ func (g *GUI) onPad() {
 		g.statusLabel.SetText("Error: No text to pad")
 		return
 	}
+
 	paddedData := securePadMessage([]byte(input))
 	base64String := base64.StdEncoding.EncodeToString(paddedData)
 	formattedBase64 := formatBase64RFC(base64String)
+
 	g.textArea.SetText(formattedBase64)
+
 	originalLen := len(input)
 	paddedLen := len(paddedData)
+
 	g.statusLabel.SetText(fmt.Sprintf("✓ Padded: %d -> %d bytes (Base64)", originalLen, paddedLen))
 }
 
@@ -944,16 +1103,19 @@ func (g *GUI) onUnpad() {
 		g.statusLabel.SetText("Error: No text to unpad")
 		return
 	}
+
 	binaryData, err := base64.StdEncoding.DecodeString(input)
 	if err != nil {
 		g.statusLabel.SetText("Unpadding failed: Invalid Base64 data")
 		return
 	}
+
 	unpaddedData, err := secureUnpadMessage(binaryData)
 	if err != nil {
 		g.statusLabel.SetText("Unpadding failed: " + err.Error())
 		return
 	}
+
 	g.textArea.SetText(string(unpaddedData))
 	g.statusLabel.SetText("✓ Message unpadded successfully")
 }
@@ -980,10 +1142,12 @@ func loadRSAPublicKey(filename string) (*rsa.PublicKey, error) {
 		return nil, fmt.Errorf("failed to read public key file: %v", err)
 	}
 	defer memguard.WipeBytes(data)
+
 	block, _ := pem.Decode(data)
 	if block == nil {
 		return nil, fmt.Errorf("no PEM data found in file")
 	}
+
 	switch block.Type {
 	case "CERTIFICATE":
 		cert, err := x509.ParseCertificate(block.Bytes)
@@ -998,6 +1162,7 @@ func loadRSAPublicKey(filename string) (*rsa.PublicKey, error) {
 			return nil, err
 		}
 		return pubKey, nil
+
 	case "PUBLIC KEY":
 		pubInterface, err := x509.ParsePKIXPublicKey(block.Bytes)
 		if err != nil {
@@ -1011,6 +1176,7 @@ func loadRSAPublicKey(filename string) (*rsa.PublicKey, error) {
 			return nil, err
 		}
 		return pubKey, nil
+
 	case "RSA PUBLIC KEY":
 		pubKey, err := x509.ParsePKCS1PublicKey(block.Bytes)
 		if err != nil {
@@ -1020,6 +1186,7 @@ func loadRSAPublicKey(filename string) (*rsa.PublicKey, error) {
 			return nil, err
 		}
 		return pubKey, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported PEM type: %s, expected CERTIFICATE, PUBLIC KEY or RSA PUBLIC KEY", block.Type)
 	}
@@ -1031,15 +1198,19 @@ func encryptAES(data, key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, err
 	}
+
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
+
 	ciphertext := gcm.Seal(nonce, nonce, data, nil)
+
 	return ciphertext, nil
 }
 
@@ -1049,19 +1220,24 @@ func decryptAES(data, key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, err
 	}
+
 	nonceSize := gcm.NonceSize()
 	if len(data) < nonceSize {
 		return nil, fmt.Errorf("ciphertext too short")
 	}
+
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, err
 	}
+
 	return plaintext, nil
 }
 
@@ -1074,6 +1250,7 @@ func openYubiKey(index int) (*piv.YubiKey, error) {
 	if len(cards) == 0 {
 		return nil, fmt.Errorf("no smart card found")
 	}
+
 	count := 0
 	for _, card := range cards {
 		if strings.Contains(strings.ToLower(card), "yubikey") {
@@ -1083,6 +1260,7 @@ func openYubiKey(index int) (*piv.YubiKey, error) {
 			count++
 		}
 	}
+
 	return nil, fmt.Errorf("no YubiKey found at index %d", index)
 }
 
@@ -1134,6 +1312,7 @@ func (identicon *ClassicIdenticon) foreground() color.Color {
 	if len(identicon.source) < 32 {
 		return color.RGBA{0, 0, 0, 255}
 	}
+
 	// Primary color index (4 bits → 16 colors) - EXACTLY like identicons program
 	colorIndex := 0
 	for i := 0; i < 4; i++ {
@@ -1142,6 +1321,7 @@ func (identicon *ClassicIdenticon) foreground() color.Color {
 		}
 	}
 	colorIndex %= 16
+
 	// Vibrant color palette — 16 beautiful, distinct colors (SAME as identicons program)
 	palette := []color.RGBA{
 		{0x00, 0xbf, 0x93, 0xff}, // turquoise
@@ -1161,6 +1341,7 @@ func (identicon *ClassicIdenticon) foreground() color.Color {
 		{0x24, 0xc3, 0x33, 0xff}, // greenIntense
 		{0x1c, 0xab, 0xbb, 0xff}, // lightBlueIntense
 	}
+
 	return palette[colorIndex]
 }
 
@@ -1169,6 +1350,7 @@ func (identicon *ClassicIdenticon) secondaryColor() color.Color {
 	if len(identicon.source) < 32 {
 		return color.RGBA{100, 100, 100, 255}
 	}
+
 	// Secondary color index (4 bits → 16 colors) - EXACTLY like identicons program
 	colorIndex := 0
 	for i := 0; i < 4; i++ {
@@ -1177,6 +1359,7 @@ func (identicon *ClassicIdenticon) secondaryColor() color.Color {
 		}
 	}
 	colorIndex %= 16
+
 	// Secondary color palette — 16 distinct colors (SAME as identicons program)
 	palette := []color.RGBA{
 		{0x34, 0x49, 0x5e, 0xff}, // darkBlue
@@ -1196,6 +1379,7 @@ func (identicon *ClassicIdenticon) secondaryColor() color.Color {
 		{0x23, 0x23, 0x23, 0xff}, // lightBlackIntense
 		{0x7e, 0x8c, 0x8d, 0xff}, // greyIntense
 	}
+
 	return palette[colorIndex]
 }
 
@@ -1204,16 +1388,20 @@ func (identicon *ClassicIdenticon) hslToRgb(h, s, l float32) color.Color {
 	hue := h / 360.0
 	sat := s / 100.0
 	lum := l / 100.0
+
 	var b float32
 	if lum <= 0.5 {
 		b = lum * (sat + 1.0)
 	} else {
 		b = lum + sat - lum*sat
 	}
+
 	a := lum*2.0 - b
+
 	red := identicon.hueToRgb(a, b, hue+1.0/3.0)
 	green := identicon.hueToRgb(a, b, hue)
 	blue := identicon.hueToRgb(a, b, hue-1.0/3.0)
+
 	return color.RGBA{
 		R: uint8(math.Round(float64(red * 255.0))),
 		G: uint8(math.Round(float64(green * 255.0))),
@@ -1229,6 +1417,7 @@ func (identicon *ClassicIdenticon) hueToRgb(a, b, hue float32) float32 {
 	} else if hue >= 1.0 {
 		hue -= 1.0
 	}
+
 	switch {
 	case hue < 1.0/6.0:
 		return a + (b-a)*6.0*hue
@@ -1248,9 +1437,11 @@ func (identicon *ClassicIdenticon) drawRect(img *image.RGBA, x0, y0, x1, y1 int,
 	y0 = max(y0, rect.Min.Y)
 	x1 = min(x1, rect.Max.X)
 	y1 = min(y1, rect.Max.Y)
+
 	if x0 >= x1 || y0 >= y1 {
 		return
 	}
+
 	r, g, b, a := c.RGBA()
 	rgba := color.RGBA{
 		R: uint8(r >> 8),
@@ -1258,6 +1449,7 @@ func (identicon *ClassicIdenticon) drawRect(img *image.RGBA, x0, y0, x1, y1 int,
 		B: uint8(b >> 8),
 		A: uint8(a >> 8),
 	}
+
 	for y := y0; y < y1; y++ {
 		rowStart := img.PixOffset(x0, y)
 		for x := 0; x < x1-x0; x++ {
@@ -1275,6 +1467,7 @@ func (identicon *ClassicIdenticon) drawRect(img *image.RGBA, x0, y0, x1, y1 int,
 func (identicon *ClassicIdenticon) generatePixelPattern() ([]bool, []bool) {
 	primary := make([]bool, 25)
 	secondary := make([]bool, 25)
+
 	// Use bits 0-14 for primary pattern (15 bits)
 	bitIndex := 0
 	for row := 0; row < 5; row++ {
@@ -1287,6 +1480,7 @@ func (identicon *ClassicIdenticon) generatePixelPattern() ([]bool, []bool) {
 			primary[mirrorIx] = paint
 		}
 	}
+
 	// Use bits 15-29 for secondary pattern (next 15 bits)
 	for row := 0; row < 5; row++ {
 		for col := 0; col < 3; col++ {
@@ -1298,6 +1492,7 @@ func (identicon *ClassicIdenticon) generatePixelPattern() ([]bool, []bool) {
 			secondary[mirrorIx] = paint
 		}
 	}
+
 	return primary, secondary
 }
 
@@ -1308,9 +1503,12 @@ func (identicon *ClassicIdenticon) Generate() image.Image {
 		spriteSize = 5
 		margin     = (256 - pixelSize*spriteSize) / 2
 	)
+
 	primaryColor := identicon.foreground()
 	secondaryColor := identicon.secondaryColor()
+
 	img := image.NewRGBA(image.Rect(0, 0, identicon.size, identicon.size))
+
 	// Background adapts to theme — use bits 252-253 to pick variation (2 bits → 3 options)
 	bgChoice := 0
 	for i := 0; i < 2; i++ { // Nur 2 Bits verwenden wie in identicons program
@@ -1319,29 +1517,35 @@ func (identicon *ClassicIdenticon) Generate() image.Image {
 		}
 	}
 	bgChoice %= 3
+
 	lightBackgrounds := []color.RGBA{
 		{255, 255, 255, 255}, // pure white
 		{243, 245, 247, 255}, // light1
 		{236, 240, 241, 255}, // light2
 	}
+
 	darkBackgrounds := []color.RGBA{
 		{30, 30, 30, 255},    // dark gray
 		{45, 62, 80, 255},    // darkBlueIntense
 		{57, 57, 57, 255},    // dark2
 	}
+
 	var bg color.RGBA
 	if fyne.CurrentApp().Settings().ThemeVariant() == theme.VariantDark {
 		bg = darkBackgrounds[bgChoice]
 	} else {
 		bg = lightBackgrounds[bgChoice]
 	}
+
 	for i := 0; i < len(img.Pix); i += 4 {
 		img.Pix[i] = bg.R
 		img.Pix[i+1] = bg.G
 		img.Pix[i+2] = bg.B
 		img.Pix[i+3] = bg.A
 	}
+
 	primaryPixels, secondaryPixels := identicon.generatePixelPattern()
+
 	// Draw secondary pixels first (background layer)
 	for row := 0; row < spriteSize; row++ {
 		for col := 0; col < spriteSize; col++ {
@@ -1352,6 +1556,7 @@ func (identicon *ClassicIdenticon) Generate() image.Image {
 			}
 		}
 	}
+
 	// Draw primary pixels on top (foreground layer)
 	for row := 0; row < spriteSize; row++ {
 		for col := 0; col < spriteSize; col++ {
@@ -1362,6 +1567,7 @@ func (identicon *ClassicIdenticon) Generate() image.Image {
 			}
 		}
 	}
+
 	return img
 }
 
@@ -1372,9 +1578,12 @@ func (identicon *ClassicIdenticon) GenerateForExport(transparent bool) image.Ima
 		spriteSize = 5
 		margin     = (256 - pixelSize*spriteSize) / 2
 	)
+
 	primaryColor := identicon.foreground()
 	secondaryColor := identicon.secondaryColor()
+
 	img := image.NewRGBA(image.Rect(0, 0, identicon.size, identicon.size))
+
 	// Set export background
 	var bg color.RGBA
 	if transparent {
@@ -1388,6 +1597,7 @@ func (identicon *ClassicIdenticon) GenerateForExport(transparent bool) image.Ima
 			}
 		}
 		bgChoice %= 3
+
 		lightBackgrounds := []color.RGBA{
 			{255, 255, 255, 255},
 			{243, 245, 247, 255},
@@ -1395,13 +1605,16 @@ func (identicon *ClassicIdenticon) GenerateForExport(transparent bool) image.Ima
 		}
 		bg = lightBackgrounds[bgChoice]
 	}
+
 	for i := 0; i < len(img.Pix); i += 4 {
 		img.Pix[i] = bg.R
 		img.Pix[i+1] = bg.G
 		img.Pix[i+2] = bg.B
 		img.Pix[i+3] = bg.A
 	}
+
 	primaryPixels, secondaryPixels := identicon.generatePixelPattern()
+
 	// Draw secondary pixels first
 	for row := 0; row < spriteSize; row++ {
 		for col := 0; col < spriteSize; col++ {
@@ -1412,6 +1625,7 @@ func (identicon *ClassicIdenticon) GenerateForExport(transparent bool) image.Ima
 			}
 		}
 	}
+
 	// Draw primary pixels on top
 	for row := 0; row < spriteSize; row++ {
 		for col := 0; col < spriteSize; col++ {
@@ -1422,5 +1636,6 @@ func (identicon *ClassicIdenticon) GenerateForExport(transparent bool) image.Ima
 			}
 		}
 	}
+
 	return img
 }
