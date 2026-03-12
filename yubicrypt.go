@@ -245,7 +245,7 @@ func (g *GUI) showInfoPopup() {
 	okButton.Importance = widget.HighImportance
 
 	content := container.NewVBox(
-		widget.NewLabelWithStyle("yubicrypt v0.1.8", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("yubicrypt v0.1.9", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 		widget.NewSeparator(),
 		container.NewHBox(
 			layout.NewSpacer(),
@@ -359,8 +359,8 @@ func (g *GUI) choosePublicKey() {
 		defer reader.Close()
 
 		path := reader.URI().Path()
-		if filepath.Ext(path) != ".pem" {
-			g.statusLabel.SetText("Error: Please select a .pem file")
+		if filepath.Ext(path) != ".crt" {
+			g.statusLabel.SetText("Error: Please select a .crt file")
 			return
 		}
 
@@ -1145,7 +1145,7 @@ func loadRSAPublicKey(filename string) (*rsa.PublicKey, error) {
 
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("no PEM data found in file")
+		return nil, fmt.Errorf("no data found in file")
 	}
 
 	switch block.Type {
@@ -1188,7 +1188,7 @@ func loadRSAPublicKey(filename string) (*rsa.PublicKey, error) {
 		return pubKey, nil
 
 	default:
-		return nil, fmt.Errorf("unsupported PEM type: %s, expected CERTIFICATE, PUBLIC KEY or RSA PUBLIC KEY", block.Type)
+		return nil, fmt.Errorf("unsupported type: %s, expected CERTIFICATE, PUBLIC KEY or RSA PUBLIC KEY", block.Type)
 	}
 }
 
