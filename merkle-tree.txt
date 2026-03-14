@@ -1,0 +1,12 @@
+--- FILE HASHES (RIPEMD-160) ---
+LICENSE: dcbebcb277ddf01358b614d4ae98395fec4b6ebf
+README.md: dea46ad50870c29ed83c4df40005ea77a1827442
+go.mod: d9a4cb9f8c66867371e8b067e6102970db7bcab5
+go.sum: 01f6325d6e84187fe83ec4c4494a9b6b58e2f4d6
+img\1.png: 3fa35a80c4af76887da3dcd642763373b08a2bb0
+localization\yubicrypt-de.go: 21862ac46a44d4b2105632a7e71c68b73b93d678
+yubicrypt.go: 60923f474ec91e475ffcacae93454e29e5bb0fcd
+yubicrypt.png: bea836be0060fa5344fc187586476b6ed944f2ab
+
+--- ROOT HASH (RIPEMD-160) ---
+90c5b7e8a92ef64084ca0636aed19e8f40bb5d14

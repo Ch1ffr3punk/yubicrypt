@@ -233,19 +233,22 @@ func (g *GUI) applyTheme() {
 	}
 }
 
-// show info pop-up
-func (g *GUI) showInfoPopup() {
+// showInfoPopup
+func (n *GUI) showInfoPopup() {
 	projURL, _ := url.Parse("https://github.com/Ch1ffr3punk/yubicrypt")
+	
 	projectLink := widget.NewHyperlink("Ein Open Source Projekt", projURL)
-
+	
 	okButton := widget.NewButton("OK", func() {
-		// Close dialog
-		g.window.Canvas().Overlays().Remove(g.window.Canvas().Overlays().Top())
+		overlays := n.window.Canvas().Overlays()
+		if overlays.Top() != nil {
+			overlays.Remove(overlays.Top())
+		}
 	})
 	okButton.Importance = widget.HighImportance
-
+	
 	content := container.NewVBox(
-		widget.NewLabelWithStyle("yubicrypt v0.1.9", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("yubicrypt v0.2.0", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 		widget.NewSeparator(),
 		container.NewHBox(
 			layout.NewSpacer(),
@@ -262,7 +265,7 @@ func (g *GUI) showInfoPopup() {
 		),
 	)
 
-	dialog.ShowCustom("", "", content, g.window)
+	dialog.ShowCustomWithoutButtons("", content, n.window)
 }
 
 // onSignText triggers the signing process for text in the GUI
